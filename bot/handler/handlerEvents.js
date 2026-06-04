@@ -146,20 +146,24 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                 if (!userData && !isNaN(senderID))
                         userData = await usersData.create(senderID);
 
-                if (!threadData && !isNaN(threadID)) {
-                        if (global.temp.createThreadDataError.includes(threadID))
-                                return;
+                // Modification ici : Support des messages privés (inbox)
+                if (!threadData) {
+                    if (global.temp.createThreadDataError.includes(threadID))
+                        return;
+                    // Support both group chats AND private messages (inbox)
+                    if (String(threadID).match(/^\d+$/)) {  // Accepte tous les IDs numériques
                         threadData = await threadsData.create(threadID);
                         global.db.receivedTheFirstMessage[threadID] = true;
+                    }
                 }
                 else {
-                        if (
-                                autoRefreshThreadInfoFirstTime === true
-                                && !global.db.receivedTheFirstMessage[threadID]
-                        ) {
-                                global.db.receivedTheFirstMessage[threadID] = true;
-                                await threadsData.refreshInfo(threadID);
-                        }
+                    if (
+                        autoRefreshThreadInfoFirstTime === true
+                        && !global.db.receivedTheFirstMessage[threadID]
+                    ) {
+                        global.db.receivedTheFirstMessage[threadID] = true;
+                        await threadsData.refreshInfo(threadID);
+                    }
                 }
 
                 if (typeof threadData.settings.hideNotiMessage == "object")
