@@ -3,9 +3,6 @@
 var utils = require("./utils");
 var cheerio = require("cheerio");
 var log = require("npmlog");
-/*var { getThemeColors } = require("../../func/utils/log.js");
-var logger = require("../../func/utils/log.js");
-var { cra, cv, cb, co } = getThemeColors();*/
 log.maxRecordSize = 100;
 var checkVerified = null;
 const Boolean_Option = ['online', 'selfListen', 'listenEvents', 'updatePresence', 'forceLogin', 'autoMarkDelivery', 'autoMarkRead', 'listenTyping', 'autoReconnect', 'emitReady'];
@@ -132,7 +129,6 @@ function buildAPI(globalOptions, html, jar) {
         return log.error('login', "Appstate die, vui lòng thay cái mới!", 'error');
     }
     userID = (tiktikCookie || userCookie).cookieString().split("=")[1];
-    //logger.log(`${cra(`[ CONNECT ]`)} Logged in as ${userID}`, "DATABASE");
     try { clearInterval(checkVerified); } catch (_) { }
     const clientID = (Math.random() * 2147483648 | 0).toString(16);
     let mqttEndpoint = `wss://edge-chat.facebook.com/chat?region=prn&sid=${userID}`;
@@ -218,8 +214,35 @@ function buildAPI(globalOptions, html, jar) {
             return null;
         }
     };
-    //if (noMqttData) api.htmlData = noMqttData;
-    require('fs').readdirSync(__dirname + '/src/').filter(v => v.endsWith('.js')).forEach(v => { api[v.replace('.js', '')] = require(`./src/${v}`)(utils.makeDefaults(html, userID, ctx), api, ctx); });
+    
+    const fs = require('fs');
+    const srcPath = __dirname + '/src/';
+    
+    if (fs.existsSync(srcPath)) {
+        const modules = fs.readdirSync(srcPath).filter(v => v.endsWith('.js'));
+        
+        for (const v of modules) {
+            try {
+                const modulePath = `./src/${v}`;
+                const moduleExports = require(modulePath);
+                const moduleName = v.replace('.js', '');
+                
+                if (typeof moduleExports === 'function') {
+                    api[moduleName] = moduleExports(defaultFuncs, api, ctx);
+                } else {
+                    api[moduleName] = moduleExports;
+                }
+                
+                console.log(`[✅] Module chargé: ${v}`);
+            } catch (err) {
+                console.error(`[❌] Erreur lors du chargement du module ${v}:`, err.message);
+                console.error(`[❌] Stack trace:`, err.stack);
+            }
+        }
+    } else {
+        console.log(`[⚠️] Le dossier src n'existe pas: ${srcPath}`);
+    }
+    
     api.listen = api.listenMqtt;
     return {
         ctx,
