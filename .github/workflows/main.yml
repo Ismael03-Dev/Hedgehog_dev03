@@ -1,0 +1,52 @@
+name: Node.js CI
+
+on:
+  push:
+    branches: [ main ]
+
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [16.x]
+
+    steps:
+
+    - uses: actions/checkout@v2
+
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v2
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: npm
+    - name: Install Canvas Dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y \
+        libcairo2-dev \
+        libjpeg-dev \
+        libpango1.0-dev \
+        libgif-dev \
+        librsvg2-dev \
+        build-essential
+
+    - name: Install FFmpeg
+      run: |
+        sudo apt install ffmpeg -y
+
+    - name: Check FFmpeg
+      run: ffmpeg -version
+
+    # INSTALL NODE MODULES
+    - name: Install Packages
+      run: npm install
+
+    # START BOT
+    - name: Start Bot
+      run: npm start

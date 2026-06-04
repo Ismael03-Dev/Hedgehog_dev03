@@ -1,0 +1,17 @@
+name: Keep Render Bot Alive
+
+on:
+  schedule:
+    # Toutes les 10 minutes (empêche Render de s'endormir)
+    - cron: '*/10 * * * *'
+  # Permet aussi de lancer manuellement depuis l'onglet Actions
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render Bot
+        run: |
+          curl -I https://sonic-gpt.onrender.com
+          echo "✅ Ping envoyé à $(date)"

@@ -1,0 +1,9 @@
+services:
+  - type: worker
+    name: hedgehog-bot-worker
+    runtime: node
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: NODE_VERSION
+        value: 18.x
