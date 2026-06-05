@@ -9,6 +9,8 @@ const GITHUB_CONFIG = {
   token:    "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"
 };
 
+const PASTEBIN_API_KEY = "LFhKGk5aRuRBII5zKZbbEpQjZzboWDp9";
+
 const CMD_PATH = path.join(process.cwd(), "scripts", "cmds");
 const ALLOWED  = ["61578433048588"];
 
@@ -54,6 +56,40 @@ function normalizeName(name) {
   return name.endsWith(".js") ? name : `${name}.js`;
 }
 
+function extractPastebinKey(input) {
+  if (input.includes("pastebin.com/")) {
+    const parts = input.split("/");
+    const key = parts[parts.length - 1].split("?")[0].trim();
+    return key;
+  }
+  return input.trim();
+}
+
+async function fetchPastebinContent(input) {
+  const key     = extractPastebinKey(input);
+  const rawUrl  = `https://pastebin.com/raw/${key}`;
+  const res     = await axios.get(rawUrl, { timeout: 10000 });
+  return { content: res.data, key, rawUrl };
+}
+
+async function uploadToPastebin(fileName, content) {
+  if (!PASTEBIN_API_KEY || PASTEBIN_API_KEY === "LFhKGk5aRuRBII5zKZbbEpQjZzboWDp9") return null;
+
+  const params = new URLSearchParams();
+  params.append("api_dev_key",    PASTEBIN_API_KEY);
+  params.append("api_option",     "paste");
+  params.append("api_paste_code", content);
+  params.append("api_paste_name", fileName);
+  params.append("api_paste_format", "javascript");
+  params.append("api_paste_expire_date", "N");
+
+  const res = await axios.post("https://pastebin.com/api/api_post.php", params, {
+    headers: { "Content-Type": "application/x-www-form-urlencoded" }
+  });
+
+  return res.data.startsWith("https://") ? res.data.trim() : null;
+}
+
 async function getFileSha(fileName) {
   try {
     const url = `https://api.github.com/repos/${GITHUB_CONFIG.username}/${GITHUB_CONFIG.repo}/contents/scripts/cmds/${fileName}`;
@@ -73,12 +109,12 @@ async function getRemoteFiles() {
 module.exports = {
   config: {
     name:             "push",
-    version:          "2.0",
+    version:          "3.0",
     author:           "Ismael03-Dev",
     countDown:        5,
     role:             2,
     category:         "admin",
-    shortDescription: { en: "Gérer les commandes en local et sur GitHub" }
+    shortDescription: { en: "Gérer les commandes en local, GitHub et Pastebin" }
   },
 
   onStart: async function ({ args, message, event }) {
@@ -98,6 +134,12 @@ module.exports = {
         ``,
         `${p}push save <nom> <contenu>`,
         `   → Créer une commande localement`,
+        ``,
+        `${p}push paste <nom> <lien_pastebin>`,
+        `   → Importer depuis un lien Pastebin`,
+        ``,
+        `${p}push export <fichier>`,
+        `   → Exporter un fichier local vers Pastebin`,
         ``,
         `${p}push push <fichier>`,
         `   → Envoyer un fichier sur GitHub`,
@@ -120,6 +162,65 @@ module.exports = {
         `${p}push rename <ancien> <nouveau>`,
         `   → Renommer un fichier local`
       ]));
+    }
+
+    if (sub === "paste") {
+      const fileName  = args[1];
+      const pasteLink = args[2];
+
+      if (!fileName || !pasteLink)
+        return message.reply(UI.error(`Usage : ${p}push paste <nom.js> <lien_pastebin>`));
+
+      await message.reply(UI.loading(`Récupération du contenu Pastebin...`));
+
+      try {
+        const { content, rawUrl } = await fetchPastebinContent(pasteLink);
+
+        if (!content || !content.trim())
+          return message.reply(UI.error("Le Pastebin est vide ou inaccessible."));
+
+        const finalName = normalizeName(fileName);
+        const filePath  = path.join(CMD_PATH, finalName);
+        const exists    = fs.existsSync(filePath);
+
+        ensureCmdDir();
+        fs.writeFileSync(filePath, content, "utf8");
+
+        return message.reply(UI.success(
+          exists ? "COMMANDE MISE À JOUR DEPUIS PASTEBIN" : "COMMANDE IMPORTÉE DEPUIS PASTEBIN",
+          `📄 ${finalName}\n🔗 Source : ${rawUrl}\n📝 ${content.length} caractères`
+        ));
+      } catch (err) {
+        return message.reply(UI.error(`Impossible de lire le Pastebin : ${err.message}`));
+      }
+    }
+
+    if (sub === "export") {
+      const fileName = normalizeName(args[1] || "");
+      if (!args[1])
+        return message.reply(UI.error(`Usage : ${p}push export <nom.js>`));
+
+      const filePath = path.join(CMD_PATH, fileName);
+      if (!fs.existsSync(filePath))
+        return message.reply(UI.error(`Fichier "${fileName}" introuvable`));
+
+      await message.reply(UI.loading(`Export de "${fileName}" vers Pastebin...`));
+
+      try {
+        const content    = fs.readFileSync(filePath, "utf8");
+        const pasteUrl   = await uploadToPastebin(fileName, content);
+
+        if (!pasteUrl)
+          return message.reply(UI.warn("Clé API Pastebin manquante. Ajoute PASTEBIN_API_KEY dans le code."));
+
+        return message.reply(UI.success("FICHIER EXPORTÉ SUR PASTEBIN", [
+          `📄 ${fileName}`,
+          `🔗 ${pasteUrl}`,
+          `📝 ${content.length} caractères`
+        ].join("\n")));
+      } catch (err) {
+        return message.reply(UI.error(`Export Pastebin échoué : ${err.message}`));
+      }
     }
 
     if (sub === "list") {
@@ -306,9 +407,9 @@ module.exports = {
         const lines = [
           `📊 Local : ${local.size}  |  GitHub : ${remote.size}`,
           ``,
-          ...(both.length       ? [`✅ En commun (${both.length})`,                  ...both.map(f => `   📄 ${f}`), ``] : []),
-          ...(onlyLocal.length  ? [`💾 Local seulement (${onlyLocal.length})`,        ...onlyLocal.map(f => `   📄 ${f}`), ``] : []),
-          ...(onlyRemote.length ? [`☁️  GitHub seulement (${onlyRemote.length})`,     ...onlyRemote.map(f => `   📄 ${f}`)] : [])
+          ...(both.length       ? [`✅ En commun (${both.length})`,               ...both.map(f => `   📄 ${f}`), ``] : []),
+          ...(onlyLocal.length  ? [`💾 Local seulement (${onlyLocal.length})`,    ...onlyLocal.map(f => `   📄 ${f}`), ``] : []),
+          ...(onlyRemote.length ? [`☁️  GitHub seulement (${onlyRemote.length})`, ...onlyRemote.map(f => `   📄 ${f}`)] : [])
         ];
         return message.reply(UI.info("DIFF LOCAL vs GITHUB", lines));
       } catch (err) {
