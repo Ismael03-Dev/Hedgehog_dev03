@@ -17,10 +17,10 @@ function toBigInt(v) {
 
 async function formatNumber(num) {
     const big = toBigInt(num);
-    
+
     if (big === 0n) return "0";
     if (big >= MAX_LIMIT || big <= -MAX_LIMIT) return "∞";
-    
+
     try {
         const r = await axios.get(`${FORMAT_URL}?n=${big.toString()}`, { timeout: 5000 });
         if (r.data?.success) {
@@ -28,7 +28,7 @@ async function formatNumber(num) {
             return r.data.formatted;
         }
     } catch {}
-    
+
     const suffixes = [
         "", "k", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", 
         "Dc", "UDc", "DDc", "TDc", "QaDc", "QiDc", "SxDc", "SpDc", 
@@ -41,30 +41,30 @@ async function formatNumber(num) {
         "UQ", "DQ", "TQ", "QQ", "QiQ", "SxQ", "SpQ", "OcQ", "NoQ", 
         "DcQ", "Uc", "Du", "Tu", "Qu", "Qiu"
     ];
-    
+
     let scaled = big;
     let suffixIndex = 0;
     const thousand = 1000n;
-    
+
     while (scaled >= thousand && suffixIndex < suffixes.length - 1) {
         scaled = scaled / thousand;
         suffixIndex++;
     }
-    
+
     if (suffixIndex === suffixes.length - 1 && scaled >= thousand) return "∞";
-    
+
     const divisor = thousand ** BigInt(suffixIndex);
     const remainder = (big % divisor) * 100n / divisor;
-    
+
     if (suffixIndex > 0 && remainder > 0n) {
         const decStr = remainder.toString().padStart(2, '0').slice(0, 2).replace(/0+$/, '');
         return decStr ? `${scaled}.${decStr}${suffixes[suffixIndex]}` : `${scaled}${suffixes[suffixIndex]}`;
     }
-    
+
     if (suffixIndex === 0) {
         return big.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
     }
-    
+
     return `${scaled}${suffixes[suffixIndex]}`;
 }
 
@@ -160,31 +160,31 @@ const SFX = {
 async function parseAmount(input) {
     if (!input) return 0n;
     const str = String(input).toLowerCase().trim();
-    
+
     try {
         const r = await axios.get(`${FORMAT_URL}?n=${encodeURIComponent(str)}`, { timeout: 5000 });
         if (r.data?.success && r.data?.raw) return toBigInt(r.data.raw);
     } catch {}
-    
+
     const m = str.match(/^(-?\d+(?:\.\d+)?)([a-zA-Z]+)?$/i);
     if (!m) return 0n;
-    
+
     const val = parseFloat(m[1]);
     const sfx = (m[2] || "").toLowerCase();
     const base = BigInt(Math.floor(Math.abs(val)));
     const neg = val < 0;
-    
+
     if (isNaN(val)) return 0n;
-    
+
     if (!sfx) return neg ? -base : base;
-    
+
     const mult = SFX[sfx];
     if (mult) {
         const result = base * mult;
         if (result >= MAX_LIMIT) return neg ? -MAX_LIMIT : MAX_LIMIT;
         return neg ? -result : result;
     }
-    
+
     return neg ? -base : base;
 }
 
@@ -319,6 +319,15 @@ function roundRect(ctx, x, y, w, h, r) {
     ctx.closePath();
 }
 
+const EMOJI_GLOW_COLORS = {
+    "💎": "#60a5fa",
+    "🎰": "#fbbf24",
+    "⭐": "#fde047",
+    "🔔": "#f59e0b",
+    "🍋": "#84cc16",
+    "🍒": "#ef4444",
+};
+
 async function generateSlotCard({ username, bet, win, winAmount, newBalance, slots, multiplier, rank, remainingSpins, avatarUrl }) {
     const W = 700, H = 440;
     const canvas = createCanvas(W, H);
@@ -412,6 +421,15 @@ async function generateSlotCard({ username, bet, win, winAmount, newBalance, slo
 
     for (let i = 0; i < 3; i++) {
         const rx = reelStartX + i * (reelW + reelGap);
+        const emoji = slots[i];
+        const emojiGlow = EMOJI_GLOW_COLORS[emoji] || "#f59e0b";
+        const isWinReel = win && (
+            (slots[0] === slots[1] && slots[1] === slots[2]) ||
+            (i === 0 && slots[0] === slots[1]) ||
+            (i === 1 && (slots[0] === slots[1] || slots[1] === slots[2])) ||
+            (i === 2 && slots[1] === slots[2])
+        );
+
         const rG = ctx.createLinearGradient(rx, reelY, rx, reelY + reelH);
         rG.addColorStop(0, "#1e1040");
         rG.addColorStop(0.5, "#140c30");
@@ -420,28 +438,48 @@ async function generateSlotCard({ username, bet, win, winAmount, newBalance, slo
         roundRect(ctx, rx, reelY, reelW, reelH, 10);
         ctx.fill();
 
-        const isWinReel = win && (
-            (slots[0] === slots[1] && slots[1] === slots[2]) ||
-            (i === 0 && slots[0] === slots[1]) ||
-            (i === 1 && (slots[0] === slots[1] || slots[1] === slots[2])) ||
-            (i === 2 && slots[1] === slots[2])
-        );
-        ctx.strokeStyle = isWinReel ? "#f59e0b" : "rgba(147,51,234,0.4)";
-        ctx.lineWidth = isWinReel ? 2.5 : 1.5;
+        ctx.strokeStyle = isWinReel ? emojiGlow : "rgba(147,51,234,0.4)";
+        ctx.lineWidth = isWinReel ? 3 : 1.5;
         ctx.stroke();
 
-        ctx.font = "52px 'Segoe UI Emoji'";
-        ctx.textAlign = "center";
-        ctx.fillText(slots[i], rx + reelW / 2, reelY + reelH / 2 + 20);
-        ctx.textAlign = "left";
+        const radGlow = ctx.createRadialGradient(
+            rx + reelW / 2, reelY + reelH / 2, 4,
+            rx + reelW / 2, reelY + reelH / 2, reelH * 0.55
+        );
+        radGlow.addColorStop(0, emojiGlow + (isWinReel ? "45" : "22"));
+        radGlow.addColorStop(0.5, emojiGlow + "12");
+        radGlow.addColorStop(1, "transparent");
+        ctx.fillStyle = radGlow;
+        roundRect(ctx, rx + 2, reelY + 2, reelW - 4, reelH - 4, 9);
+        ctx.fill();
+
+        ctx.shadowColor = emojiGlow;
+        ctx.shadowBlur  = isWinReel ? 32 : 18;
+        ctx.font        = "56px 'Segoe UI Emoji'";
+        ctx.textAlign   = "center";
+        ctx.fillStyle   = "#ffffff";
+        ctx.fillText(emoji, rx + reelW / 2, reelY + reelH / 2 + 22);
+        ctx.shadowBlur  = 0;
+        ctx.textAlign   = "left";
 
         if (isWinReel) {
-            const glowG = ctx.createRadialGradient(rx + reelW / 2, reelY + reelH / 2, 10, rx + reelW / 2, reelY + reelH / 2, 60);
-            glowG.addColorStop(0, "rgba(245,158,11,0.15)");
-            glowG.addColorStop(1, "rgba(245,158,11,0)");
-            ctx.fillStyle = glowG;
+            const winGlow = ctx.createRadialGradient(
+                rx + reelW / 2, reelY + reelH / 2, 10,
+                rx + reelW / 2, reelY + reelH / 2, 64
+            );
+            winGlow.addColorStop(0, emojiGlow + "28");
+            winGlow.addColorStop(1, "transparent");
+            ctx.fillStyle = winGlow;
             roundRect(ctx, rx, reelY, reelW, reelH, 10);
             ctx.fill();
+
+            ctx.strokeStyle = emojiGlow;
+            ctx.lineWidth   = 2.5;
+            ctx.shadowColor = emojiGlow;
+            ctx.shadowBlur  = 14;
+            roundRect(ctx, rx, reelY, reelW, reelH, 10);
+            ctx.stroke();
+            ctx.shadowBlur = 0;
         }
     }
 
