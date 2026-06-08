@@ -7,17 +7,26 @@ const GITHUB_CONFIG = {
   username: "Ismael03-Dev",
   repo: "Hedgehog_dev03",
   branch: "main",
-  token: "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"
+  token: "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"
 };
 
-const GROQ_API_KEY = "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";
+const GROQ_API_KEY = "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";
 const PASTEBIN_API_KEY = "LFhKGk5aRuRBII5zKZbbEpQjZzboWDp9";
 const CMD_PATH = path.join(process.cwd(), "scripts", "cmds");
 const ALLOWED = ["61578433048588"];
 
 const UI = {
   frame: (emoji, text) => {
-    return `╭─────────────────────•\n│ ${emoji} ${text}\n╰─────────────────────•`;
+    const lines = text.split("\n");
+    if (lines.length === 1) {
+      return `╭─────────────────────•\n│ ${emoji} ${text}\n╰─────────────────────•`;
+    }
+    let msg = `╭─────────────────────•\n│ ${emoji} ${lines[0]}\n├─────────────────────•\n`;
+    for (let i = 1; i < lines.length; i++) {
+      msg += `│ ${lines[i]}\n`;
+    }
+    msg += `╰─────────────────────•`;
+    return msg;
   },
 
   success: (text) => UI.frame("✅", text),
@@ -104,6 +113,7 @@ async function getFileSha(fileName) {
 async function getRemoteFiles() {
   const url = `https://api.github.com/repos/${GITHUB_CONFIG.username}/${GITHUB_CONFIG.repo}/contents/scripts/cmds?ref=${GITHUB_CONFIG.branch}`;
   const res = await axios.get(url, { headers: githubHeaders() });
+  if (!Array.isArray(res.data)) return [];
   return res.data.filter(f => f.name.endsWith(".js"));
 }
 
@@ -133,35 +143,51 @@ async function askHedgehog(history, userMessage) {
 
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
-    ...history.slice(-12)
+    ...history.slice(-10)
   ];
 
-  const res = await axios.post(
-    "https://api.groq.com/openai/v1/chat/completions",
-    {
-      model: "llama-4-scout-17b-16e-instruct",
-      messages: messages,
-      max_tokens: 4096,
-      temperature: 0.3
-    },
-    {
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${GROQ_API_KEY}`
-      },
-      timeout: 60000
+  const models = [
+    "llama-3.1-8b-instant",
+    "gemma2-9b-it",
+    "llama-3.3-70b-versatile",
+    "mixtral-8x7b-32768"
+  ];
+
+  for (const model of models) {
+    try {
+      const res = await axios.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          model: model,
+          messages: messages,
+          max_tokens: 4096,
+          temperature: 0.3
+        },
+        {
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${GROQ_API_KEY}`
+          },
+          timeout: 90000
+        }
+      );
+
+      const reply = res.data.choices[0].message.content;
+
+      if (!reply || reply.trim() === "") {
+        throw new Error("Réponse vide");
+      }
+
+      history.push({ role: "assistant", content: reply });
+      if (history.length > 20) history.splice(0, 2);
+      return reply;
+    } catch (err) {
+      if (err.response?.status === 404) continue;
+      throw new Error(`Groq: ${err.response?.data?.error?.message || err.message}`);
     }
-  );
-
-  const reply = res.data.choices[0].message.content;
-
-  if (!reply || reply.trim() === "") {
-    throw new Error("Réponse vide de l'IA");
   }
 
-  history.push({ role: "assistant", content: reply });
-  if (history.length > 24) history.splice(0, 2);
-  return reply;
+  throw new Error("Aucun modèle Groq disponible.");
 }
 
 function detectSyntaxErrors(code, fileName) {
@@ -195,6 +221,10 @@ function detectSyntaxErrors(code, fileName) {
         errors.push(`L${lineNum}: ext manquante "${match[1]}"`);
       }
     }
+
+    if (line.includes("try {") && !code.includes("catch")) {
+      errors.push(`L${lineNum}: try sans catch`);
+    }
   });
 
   if (code.includes("module.exports")) {
@@ -202,6 +232,12 @@ function detectSyntaxErrors(code, fileName) {
     if (!code.includes("onStart:") && !code.includes("onChat:")) {
       errors.push("Structure: onStart/onChat requis");
     }
+  }
+
+  const openBraces = (code.match(/\{/g) || []).length;
+  const closeBraces = (code.match(/\}/g) || []).length;
+  if (openBraces !== closeBraces) {
+    errors.push(`Syntaxe: accolades ({${openBraces}} vs {${closeBraces}})`);
   }
 
   return errors;
@@ -240,11 +276,8 @@ async function autoScanAllFiles() {
 async function createTrapPastebin(fileName) {
   const trapMessages = [
     "🦔 HEDGEHOG GPT - SÉCURITÉ\n\nCode protégé.\nPropriétaire: Ismael03-Dev\n\n⚠️ Fichier verrouillé.\n🔒 Code non accessible.\n\nPasse ton chemin. 🦔",
-
-    "🔐 ACCÈS RESTREINT\n\nLeurre automatisé.\nCode sécurisé sur GitHub.\n\nIsmael03-Dev\nHedgehogGPT v11.0\n\nPas de chance. 😈🦔",
-
+    "🔐 ACCÈS RESTREINT\n\nLeurre automatisé.\nCode sécurisé sur GitHub.\n\nIsmael03-Dev\nHedgehogGPT v12.0\n\nPas de chance. 😈🦔",
     "🛡️ HEDGEHOG GUARD\n\nLien piège.\nPropriété de Ismael03-Dev.\n\n« Le code appartient à\nceux qui le codent. »\n— HedgehogGPT 🦔",
-
     "⚠️ LEURRE DÉTECTÉ\n\nFaux lien !\nVrai code sur GitHub.\n\nTemps perdu: 10s.\nRegret estimé: élevé.\n\n🦔 HedgehogGPT veille."
   ];
 
@@ -253,147 +286,144 @@ async function createTrapPastebin(fileName) {
 }
 
 async function createCodeImage(code, fileName) {
-  const lineHeight = 20;
-  const padding = 20;
-  const fontSize = 13;
-  const headerHeight = 40;
-  const maxLineWidth = 70;
+  return new Promise(async (resolve, reject) => {
+    try {
+      const lineHeight = 20;
+      const padding = 20;
+      const fontSize = 13;
+      const headerHeight = 40;
+      const maxLineWidth = 70;
 
-  const lines = code.split("\n").slice(0, 35);
-  const displayLines = [];
+      const lines = code.split("\n").slice(0, 35);
+      const displayLines = [];
 
-  lines.forEach(line => {
-    if (line.length <= maxLineWidth) {
-      displayLines.push(line);
-    } else {
-      let remaining = line;
-      while (remaining.length > maxLineWidth) {
-        displayLines.push(remaining.slice(0, maxLineWidth));
-        remaining = remaining.slice(maxLineWidth);
-      }
-      if (remaining) displayLines.push(remaining);
-    }
-  });
-
-  const slicedLines = displayLines.slice(0, 35);
-  const width = maxLineWidth * 8 + padding * 2;
-  const height = slicedLines.length * lineHeight + headerHeight + padding;
-
-  const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext("2d");
-
-  ctx.fillStyle = "#0d1117";
-  ctx.fillRect(0, 0, width, height);
-
-  ctx.fillStyle = "#161b22";
-  ctx.fillRect(0, 0, width, headerHeight);
-
-  ctx.fillStyle = "#ff7b72";
-  ctx.beginPath();
-  ctx.arc(padding + 7, headerHeight / 2, 6, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = "#f0df72";
-  ctx.beginPath();
-  ctx.arc(padding + 22, headerHeight / 2, 6, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = "#56d364";
-  ctx.beginPath();
-  ctx.arc(padding + 37, headerHeight / 2, 6, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = "#8b949e";
-  ctx.font = `${fontSize}px Courier New`;
-  ctx.fillText(fileName, padding + 55, headerHeight / 2 + 4);
-
-  const keywords = ["const", "let", "var", "function", "async", "await", "return", "if", "else", "for", "while", "try", "catch", "require", "module", "exports", "true", "false", "null", "undefined", "new", "class", "import", "from", "export", "default"];
-  const methods = ["fs.", "path.", "axios.", "message.", "event.", "global.", "console."];
-
-  slicedLines.forEach((line, i) => {
-    const y = headerHeight + padding + i * lineHeight;
-    let x = padding;
-    let remaining = line;
-
-    while (remaining.length > 0) {
-      let found = false;
-
-      if (remaining.startsWith("//")) {
-        ctx.fillStyle = "#8b949e";
-        ctx.font = `${fontSize}px Courier New`;
-        ctx.fillText(remaining, x, y);
-        return;
-      }
-
-      for (const kw of keywords) {
-        if (remaining.startsWith(kw) && (!remaining[kw.length] || /[^a-zA-Z0-9_$]/.test(remaining[kw.length]))) {
-          ctx.fillStyle = "#ff7b72";
-          ctx.font = `bold ${fontSize}px Courier New`;
-          ctx.fillText(kw, x, y);
-          x += ctx.measureText(kw).width;
-          remaining = remaining.slice(kw.length);
-          found = true;
-          break;
+      lines.forEach(line => {
+        if (line.length <= maxLineWidth) {
+          displayLines.push(line);
+        } else {
+          let remaining = line;
+          while (remaining.length > maxLineWidth) {
+            displayLines.push(remaining.slice(0, maxLineWidth));
+            remaining = remaining.slice(maxLineWidth);
+          }
+          if (remaining) displayLines.push(remaining);
         }
-      }
-      if (found) continue;
+      });
 
-      for (const m of methods) {
-        if (remaining.startsWith(m)) {
-          ctx.fillStyle = "#d2a8ff";
-          ctx.font = `${fontSize}px Courier New`;
-          ctx.fillText(m, x, y);
-          x += ctx.measureText(m).width;
-          remaining = remaining.slice(m.length);
-          found = true;
-          break;
-        }
-      }
-      if (found) continue;
+      const slicedLines = displayLines.slice(0, 35);
+      const width = Math.max(400, maxLineWidth * 8 + padding * 2);
+      const height = slicedLines.length * lineHeight + headerHeight + padding;
 
-      const strMatch = remaining.match(/^(['"`])(?:(?!\1)[^\\]|\\.)*\1/);
-      if (strMatch) {
-        ctx.fillStyle = "#a5d6ff";
-        ctx.font = `${fontSize}px Courier New`;
-        ctx.fillText(strMatch[0], x, y);
-        x += ctx.measureText(strMatch[0]).width;
-        remaining = remaining.slice(strMatch[0].length);
-        continue;
-      }
+      const canvas = createCanvas(width, height);
+      const ctx = canvas.getContext("2d");
 
-      const numMatch = remaining.match(/^\d+/);
-      if (numMatch) {
-        ctx.fillStyle = "#79c0ff";
-        ctx.font = `${fontSize}px Courier New`;
-        ctx.fillText(numMatch[0], x, y);
-        x += ctx.measureText(numMatch[0]).width;
-        remaining = remaining.slice(numMatch[0].length);
-        continue;
-      }
+      ctx.fillStyle = "#0d1117";
+      ctx.fillRect(0, 0, width, height);
 
-      ctx.fillStyle = "#c9d1d9";
+      ctx.fillStyle = "#161b22";
+      ctx.fillRect(0, 0, width, headerHeight);
+
+      ctx.fillStyle = "#ff7b72";
+      ctx.beginPath();
+      ctx.arc(padding + 7, headerHeight / 2, 6, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#f0df72";
+      ctx.beginPath();
+      ctx.arc(padding + 22, headerHeight / 2, 6, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#56d364";
+      ctx.beginPath();
+      ctx.arc(padding + 37, headerHeight / 2, 6, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#8b949e";
       ctx.font = `${fontSize}px Courier New`;
-      ctx.fillText(remaining[0], x, y);
-      x += ctx.measureText(remaining[0]).width;
-      remaining = remaining.slice(1);
+      ctx.fillText(fileName.slice(0, 30), padding + 55, headerHeight / 2 + 4);
+
+      const keywords = ["const", "let", "var", "function", "async", "await", "return", "if", "else", "for", "while", "try", "catch", "require", "module", "exports", "true", "false", "null", "undefined", "new", "class", "import", "from", "export", "default"];
+      const methods = ["fs.", "path.", "axios.", "message.", "event.", "global.", "console."];
+
+      slicedLines.forEach((line, i) => {
+        const y = headerHeight + padding + i * lineHeight;
+        let x = padding;
+        let remaining = line;
+
+        while (remaining.length > 0) {
+          if (remaining.startsWith("//")) {
+            ctx.fillStyle = "#8b949e";
+            ctx.font = `${fontSize}px Courier New`;
+            ctx.fillText(remaining.slice(0, maxLineWidth), x, y);
+            return;
+          }
+
+          let found = false;
+          for (const kw of keywords) {
+            if (remaining.startsWith(kw) && (!remaining[kw.length] || /[^a-zA-Z0-9_$]/.test(remaining[kw.length]))) {
+              ctx.fillStyle = "#ff7b72";
+              ctx.font = `bold ${fontSize}px Courier New`;
+              ctx.fillText(kw, x, y);
+              x += ctx.measureText(kw).width;
+              remaining = remaining.slice(kw.length);
+              found = true;
+              break;
+            }
+          }
+          if (found) continue;
+
+          for (const m of methods) {
+            if (remaining.startsWith(m)) {
+              ctx.fillStyle = "#d2a8ff";
+              ctx.font = `${fontSize}px Courier New`;
+              ctx.fillText(m, x, y);
+              x += ctx.measureText(m).width;
+              remaining = remaining.slice(m.length);
+              found = true;
+              break;
+            }
+          }
+          if (found) continue;
+
+          const strMatch = remaining.match(/^(['"`])(?:(?!\1)[^\\]|\\.)*\1/);
+          if (strMatch) {
+            ctx.fillStyle = "#a5d6ff";
+            ctx.font = `${fontSize}px Courier New`;
+            ctx.fillText(strMatch[0], x, y);
+            x += ctx.measureText(strMatch[0]).width;
+            remaining = remaining.slice(strMatch[0].length);
+            continue;
+          }
+
+          ctx.fillStyle = "#c9d1d9";
+          ctx.font = `${fontSize}px Courier New`;
+          ctx.fillText(remaining[0], x, y);
+          x += ctx.measureText(remaining[0]).width;
+          remaining = remaining.slice(1);
+        }
+      });
+
+      const buffer = canvas.toBuffer("image/png");
+      const tempDir = path.join(process.cwd(), "temp");
+      if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+      const imagePath = path.join(tempDir, `code_${Date.now()}.png`);
+      fs.writeFileSync(imagePath, buffer);
+
+      if (fs.existsSync(imagePath) && fs.statSync(imagePath).size > 0) {
+        resolve(imagePath);
+      } else {
+        reject(new Error("Image vide"));
+      }
+    } catch (err) {
+      reject(err);
     }
   });
-
-  ctx.fillStyle = "#21262d";
-  ctx.fillRect(0, height - 1, width, 1);
-
-  const buffer = canvas.toBuffer("image/png");
-  const tempDir = path.join(process.cwd(), "temp");
-  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-  const imagePath = path.join(tempDir, `code_${Date.now()}.png`);
-  fs.writeFileSync(imagePath, buffer);
-  return imagePath;
 }
 
 module.exports = {
   config: {
     name: "commit",
-    version: "11.0",
+    version: "12.0",
     author: "Ismael03-Dev",
     countDown: 5,
     role: 2,
@@ -417,16 +447,16 @@ module.exports = {
     if (!query || query.toLowerCase() === "help") {
       return message.reply(
         `╭─────────────────────•\n` +
-        `│ 🦔 𝐇𝐄𝐃𝐆𝐄𝐇𝐎𝐆 𝐆𝐏𝐓\n` +
+        `│ 🦔 𝐇𝐄𝐃𝐆𝐄𝐇𝐎𝐆 𝐆𝐏𝐓 𝐯𝟏𝟐\n` +
         `├─────────────────────•\n` +
         `│ scan → Scan + corrige tout\n` +
         `│ check <f> → Vérifie erreurs\n` +
         `│ preview <f> → Aperçu image\n` +
-        `│ analyse <f> → Analyse\n` +
+        `│ analyse <f> → Analyse IA\n` +
         `│ fix <f> → Corrige + commit\n` +
         `│ doc <f> → JSDoc + commit\n` +
         `│ test <f> → Tests + commit\n` +
-        `│ explain <f> → Explique\n` +
+        `│ explain <f> → Explique code\n` +
         `│ simplify <f> → Refactorise\n` +
         `│ review <f> → Code review\n` +
         `│ list → Liste fichiers\n` +
@@ -480,16 +510,23 @@ module.exports = {
         const code = await getFileContent(fileName);
         const imagePath = await createCodeImage(code, fileName);
 
-        await message.reply({
-          body: UI.success(`${fileName} | ${code.split("\n").length} lignes`),
+        if (!fs.existsSync(imagePath)) {
+          return message.reply(UI.error("Image non créée."));
+        }
+
+        const msg = {
+          body: UI.success(`${fileName} | ${code.split("\n").length} lignes | ${code.length} car.`),
           attachment: fs.createReadStream(imagePath)
+        };
+
+        message.reply(msg, () => {
+          setTimeout(() => {
+            try { fs.unlinkSync(imagePath); } catch {}
+          }, 5000);
         });
 
-        setTimeout(() => {
-          try { fs.unlinkSync(imagePath); } catch {}
-        }, 5000);
       } catch (err) {
-        return message.reply(UI.error(err.message));
+        return message.reply(UI.error(`Preview : ${err.message}`));
       }
     }
 
