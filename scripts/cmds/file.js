@@ -1,35 +1,73 @@
 const fs = require('fs');
+const path = require('path');
+
+// Configuration des permissions
+const AUTHORIZED_USERS = ["61578718657900"]; // Liste des utilisateurs autorisés
+const AUTHORIZED_GROUPS = []; // Ajoute des IDs de groupes si besoin
+
+// Vérifier si l'utilisateur est autorisé
+function isAuthorized(senderID, threadID) {
+    if (AUTHORIZED_USERS.includes(senderID)) return true;
+    if (AUTHORIZED_GROUPS.includes(threadID)) return true;
+    return false;
+}
+
+// Meta Bold uniquement pour le titre
+const toBold = (text) => {
+    const dict = {
+        'a': '𝐚', 'b': '𝐛', 'c': '𝐜', 'd': '𝐝', 'e': '𝐞', 'f': '𝐟', 'g': '𝐠', 'h': '𝐡', 'i': '𝐢', 'j': '𝐣', 'k': '𝐤', 'l': '𝐥', 'm': '𝐦',
+        'n': '𝐧', 'o': '𝐨', 'p': '𝐩', 'q': '𝐪', 'r': '𝐫', 's': '𝐬', 't': '𝐭', 'u': '𝐮', 'v': '𝐯', 'w': '𝐰', 'x': '𝐱', 'y': '𝐲', 'z': '𝐳',
+        'A': '𝐀', 'B': '𝐁', 'C': '𝐂', 'D': '𝐃', 'E': '𝐄', 'F': '𝐅', 'G': '𝐆', 'H': '𝐇', 'I': '𝐈', 'J': '𝐉', 'K': '𝐊', 'L': '𝐋', 'M': '𝐌',
+        'N': '𝐍', 'O': '𝐎', 'P': '𝐏', 'Q': '𝐐', 'R': '𝐑', 'S': '𝐒', 'T': '𝐓', 'U': '𝐔', 'V': '𝐕', 'W': '𝐖', 'X': '𝐗', 'Y': '𝐘', 'Z': '𝐙',
+        '0': '𝟎', '1': '𝟏', '2': '𝟐', '3': '𝟑', '4': '𝟒', '5': '𝟓', '6': '𝟔', '7': '𝟕', '8': '𝟖', '9': '𝟗'
+    };
+    return text.split('').map(c => dict[c] || c).join('');
+};
 
 module.exports = {
-  config: {
-    name: "file",
-    version: "1.0",
-    author: "OtinXShiva",
-    countDown: 5,
-    role: 0,
-    shortDescription: "Send bot script",
-    longDescription: "Send bot specified file ",
-    category: "owner",
-    guide: "{pn} file name. Ex: .{pn} filename"
-  },
+    config: {
+        name: "file",
+        aliases: ["extract", "getcmd"],
+        version: "1.1",
+        author: "Master Charbel",
+        countDown: 2,
+        role: 2,
+        category: "admin",
+        shortDescription: { en: "Extrait le code source d'une commande." },
+        guide: { en: "{pn} <nom_commande>" }
+    },
 
-  onStart: async function ({ message, args, api, event }) {
-    const permission = ["61578433048588", "61589149033077"];
-    if (!permission.includes(event.senderID)) {
-      return api.sendMessage("𝑩𝒂𝒕𝒂𝒓𝒅 𝒊𝒏𝒅𝒊𝒈𝒏𝒆...𝒔𝒆𝒖𝒍 ミ★𝐒𝐎𝐍𝐈𝐂✄𝐄𝐗𝐄 3.0★彡 𝒑𝒆𝒖𝒕 𝒖𝒕𝒊𝒍𝒊𝒔𝒆𝒓 𝒄𝒆𝒕𝒕𝒆 𝒇𝒐𝒏𝒄𝒕𝒊𝒐𝒏...😒🔒🍀", event.threadID, event.messageID);
-    }
-    
-    const fileName = args[0];
-    if (!fileName) {
-      return api.sendMessage("𝖡𝖺𝗅𝖺𝗇𝖼𝖾 𝗅𝖾 𝗇𝗈𝗆 𝖽𝗎 𝖿𝗂𝖼𝗁𝗂𝖾𝗋.", event.threadID, event.messageID);
-    }
+    onStart: async function ({ api, event, args }) {
+        const { threadID, messageID, senderID } = event;
 
-    const filePath = __dirname + `/${fileName}.js`;
-    if (!fs.existsSync(filePath)) {
-      return api.sendMessage(`File not found: ${fileName}.js`, event.threadID, event.messageID);
-    }
+        // Vérification des permissions
+        if (!isAuthorized(senderID, threadID)) {
+            return api.sendMessage("❌ Vous n'êtes pas autorisé à utiliser cette commande.", threadID, messageID);
+        }
 
-    const fileContent = fs.readFileSync(filePath, 'utf8');
-    api.sendMessage({ body: fileContent }, event.threadID);
-  }
+        const commandName = args[0];
+
+        if (!commandName) {
+            return api.sendMessage("⚠️ Usage: file <nom_commande>", threadID, messageID);
+        }
+
+        const filePath = path.join(__dirname, `${commandName.toLowerCase()}.js`);
+
+        try {
+            if (!fs.existsSync(filePath)) {
+                return api.sendMessage(`❌ La commande "${commandName}.js" n'existe pas.`, threadID, messageID);
+            }
+
+            const fileContent = fs.readFileSync(filePath, 'utf8');
+
+            const header = `📦 ${toBold("EXTRACTION REUSSIE")} 📦\n📄 Fichier: ${commandName}.js\n━━━━━━━━━━━━━━━━━━━\n\n`;
+            const footer = `\n━━━━━━━━━━━━━━━━━━━\n⚙️ Master Charbel Security`;
+
+            return api.sendMessage(header + fileContent + footer, threadID, messageID);
+
+        } catch (error) {
+            console.log(`[Erreur File] ${error.message}`);
+            return api.sendMessage("❌ Une erreur est survenue lors de la lecture du fichier.", threadID, messageID);
+        }
+    }
 };
