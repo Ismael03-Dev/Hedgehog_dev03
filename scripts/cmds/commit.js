@@ -29,10 +29,13 @@ const PASTEBIN_API_KEY = CONFIG.pastebin_key || "LFhKGk5aRuRBII5zKZbbEpQjZzboWDp
 const CMD_PATH         = path.join(process.cwd(), "scripts", "cmds");
 const ALLOWED          = CONFIG.allowed      || ["61578433048588"];
 
-const MAX_FILE_SIZE    = 80000;
-const TOKEN_CACHE_TTL  = 5 * 60 * 1000;
+const MAX_FILE_SIZE   = 80000;
+const TOKEN_CACHE_TTL = 5 * 60 * 1000;
+const REACTION_TTL    = 3 * 60 * 1000;
 
 let tokenCache = { valid: null, user: null, ts: 0 };
+
+const pendingActions = new Map();
 
 const UI = {
   frame: (emoji, text) => {
@@ -48,7 +51,8 @@ const UI = {
   info:     (text) => UI.frame("📦", text),
   hedgehog: (text) => UI.frame("🦔", text),
   warn:     (text) => UI.frame("⚠️", text),
-  loading:  (text) => UI.frame("⏳", text)
+  loading:  (text) => UI.frame("⏳", text),
+  pending:  (text) => UI.frame("💬", text)
 };
 
 const SYSTEM_PROMPT = `Tu es HedgehogGPT, un assistant IA expert en développement JavaScript et en bots Messenger (GoatBot/fca-unofficial).
@@ -56,18 +60,10 @@ Tu as un accès TOTAL au repository GitHub ${GITHUB_CONFIG.username}/${GITHUB_CO
 Tu peux lire, analyser, modifier, créer et supprimer n'importe quel fichier du repository.
 Tu te souviens de toutes les discussions passées avec l'utilisateur.
 
-Tes capacités :
-- Lire et analyser n'importe quel fichier du repo via l'API GitHub
-- Corriger les bugs et pusher directement sur GitHub
-- Générer de la documentation JSDoc complète
-- Créer des tests unitaires
-- Refactoriser et simplifier le code
-- Faire des code reviews professionnelles
-- Expliquer le code ligne par ligne
-- Créer de nouveaux fichiers de commandes GoatBot complets
-- Détecter les erreurs de syntaxe automatiquement
-- Comparer des versions de fichiers
-- Effectuer des rollbacks vers des versions précédentes
+Quand tu analyses un fichier et que tu veux proposer des améliorations, structure ta réponse ainsi :
+1. Analyse rapide du fichier
+2. Liste des améliorations proposées
+3. Termine TOUJOURS par : "💬 Réagis à ce message pour que j'applique les améliorations directement sur GitHub."
 
 Quand tu modifies du code, retourne UNIQUEMENT le code final sans explications, sans backticks, sans markdown.
 Pour les analyses et explications, réponds clairement en français.
@@ -115,21 +111,16 @@ function saveBackup(fileName, content) {
   try {
     const backups = loadBackups();
     if (!backups[fileName]) backups[fileName] = [];
-    backups[fileName].unshift({
-      content,
-      date: new Date().toISOString(),
-      size: content.length
-    });
+    backups[fileName].unshift({ content, date: new Date().toISOString(), size: content.length });
     if (backups[fileName].length > 5) backups[fileName] = backups[fileName].slice(0, 5);
     fs.writeFileSync(BACKUP_PATH, JSON.stringify(backups, null, 2), "utf8");
   } catch (e) {
-    console.error("[backup] Erreur sauvegarde:", e.message);
+    console.error("[backup]", e.message);
   }
 }
 
 function getBackup(fileName, index = 0) {
-  const backups = loadBackups();
-  return backups[fileName]?.[index] || null;
+  return loadBackups()[fileName]?.[index] || null;
 }
 
 async function fetchPastebinContent(input) {
@@ -161,7 +152,7 @@ async function verifyToken(forceRefresh = false) {
     return { valid: tokenCache.valid, user: tokenCache.user };
 
   try {
-    const res = await axios.get("https://api.github.com/user", { headers: githubHeaders() });
+    const res  = await axios.get("https://api.github.com/user", { headers: githubHeaders() });
     tokenCache = { valid: true, user: res.data.login, ts: now };
     return { valid: true, user: res.data.login };
   } catch (err) {
@@ -191,8 +182,11 @@ async function getRemoteFiles() {
 }
 
 async function getFileContent(fileName) {
-  const url = `https://api.github.com/repos/${GITHUB_CONFIG.username}/${GITHUB_CONFIG.repo}/contents/scripts/cmds/${fileName}`;
-  const res = await axios.get(url, { headers: githubHeaders() });
+  const url = `https://api.github.com/repos/${GITHUB_CONFIG.username}/${GITHUB_CONFIG.repo}/contents/scripts/cmds/${fileName}?ref=${GITHUB_CONFIG.branch}&timestamp=${Date.now()}`;
+  const res = await axios.get(url, {
+    headers: { ...githubHeaders(), "Cache-Control": "no-cache" }
+  });
+  if (!res.data.content) throw new Error(`Fichier "${fileName}" introuvable sur GitHub`);
   return Buffer.from(res.data.content, "base64").toString("utf8");
 }
 
@@ -207,9 +201,10 @@ async function pushFileToGithub(fileName, content, commitMsg) {
     throw new Error(`Token GitHub invalide : ${tokenCheck.reason}`);
 
   const url            = `https://api.github.com/repos/${GITHUB_CONFIG.username}/${GITHUB_CONFIG.repo}/contents/scripts/cmds/${fileName}`;
-  const encodedContent = typeof content === "string"
-    ? Buffer.from(content).toString("base64")
-    : Buffer.from(fs.readFileSync(content)).toString("base64");
+  const encodedContent = Buffer.from(
+    typeof content === "string" ? content : fs.readFileSync(content)
+  ).toString("base64");
+
   const sha  = await getFileSha(fileName);
   const body = {
     message: commitMsg || `🦔 HedgehogGPT: commit ${fileName}`,
@@ -218,11 +213,12 @@ async function pushFileToGithub(fileName, content, commitMsg) {
   };
   if (sha) body.sha = sha;
 
-  try {
-    await axios.put(url, body, { headers: githubHeaders() });
-  } catch (err) {
-    throw new Error(err.response?.data?.message || err.message);
-  }
+  const response = await axios.put(url, body, { headers: githubHeaders() });
+
+  if (response.status !== 200 && response.status !== 201)
+    throw new Error(`GitHub a retourné le statut ${response.status}`);
+
+  return response.data;
 }
 
 async function deleteFileOnGithub(fileName) {
@@ -265,17 +261,9 @@ async function askHedgehog(history, userMessage) {
   try {
     const res = await axios.post(
       "https://api.mistral.ai/v1/chat/completions",
+      { model: "mistral-large-latest", messages, max_tokens: 4096, temperature: 0.3 },
       {
-        model:       "mistral-large-latest",
-        messages:    messages,
-        max_tokens:  4096,
-        temperature: 0.3
-      },
-      {
-        headers: {
-          "Content-Type":  "application/json",
-          "Authorization": `Bearer ${MISTRAL_API_KEY}`
-        },
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${MISTRAL_API_KEY}` },
         timeout: 60000
       }
     );
@@ -295,18 +283,17 @@ async function askHedgehog(history, userMessage) {
   }
 }
 
-function detectSyntaxErrors(code, fileName) {
-  const errors = [];
-  const lines  = code.split("\n");
-  const asyncFunctionRanges = [];
+function detectSyntaxErrors(code) {
+  const errors  = [];
+  const lines   = code.split("\n");
+  const asyncAt = [];
 
-  lines.forEach((line, index) => {
-    if (line.includes("async function") || line.includes("async (") || line.includes("async ("))
-      asyncFunctionRanges.push(index);
+  lines.forEach((line, i) => {
+    if (/async\s+(function|\(|[a-zA-Z_$])/.test(line)) asyncAt.push(i);
   });
 
-  lines.forEach((line, index) => {
-    const lineNum = index + 1;
+  lines.forEach((line, i) => {
+    const lineNum = i + 1;
 
     if (line.includes("require(")) {
       const match = line.match(/require\(['"]([^'"]+)['"]\)/);
@@ -317,11 +304,9 @@ function detectSyntaxErrors(code, fileName) {
       }
     }
 
-    if (line.includes("await ")) {
-      const inAsync = asyncFunctionRanges.some(start => index >= start);
-      if (!inAsync && !lines.slice(0, index).some(l => l.includes("async")))
+    if (line.includes("await ") && !asyncAt.some(start => i >= start))
+      if (!lines.slice(0, i).some(l => /async\s/.test(l)))
         errors.push(`L${lineNum}: await hors contexte async`);
-    }
   });
 
   const tryCounts   = (code.match(/\btry\s*\{/g) || []).length;
@@ -334,15 +319,13 @@ function detectSyntaxErrors(code, fileName) {
     if (!code.includes("onStart:") && !code.includes("onChat:")) errors.push("Structure: onStart/onChat requis");
   }
 
-  const openBraces  = (code.match(/\{/g) || []).length;
-  const closeBraces = (code.match(/\}/g) || []).length;
-  if (openBraces !== closeBraces)
-    errors.push(`Syntaxe: accolades déséquilibrées ({${openBraces}} vs }${closeBraces}})`);
+  const ob = (code.match(/\{/g) || []).length;
+  const cb = (code.match(/\}/g) || []).length;
+  if (ob !== cb) errors.push(`Accolades déséquilibrées ({${ob}} vs }${cb})`);
 
-  const openParens  = (code.match(/\(/g) || []).length;
-  const closeParens = (code.match(/\)/g) || []).length;
-  if (openParens !== closeParens)
-    errors.push(`Syntaxe: parenthèses déséquilibrées (${openParens} vs )${closeParens})`);
+  const op = (code.match(/\(/g) || []).length;
+  const cp = (code.match(/\)/g) || []).length;
+  if (op !== cp) errors.push(`Parenthèses déséquilibrées ((${op}) vs )${cp})`);
 
   return errors;
 }
@@ -352,13 +335,7 @@ function diffFiles(oldCode, newCode) {
   const newLines = newCode.split("\n");
   const added    = newLines.filter(l => !oldLines.includes(l)).length;
   const removed  = oldLines.filter(l => !newLines.includes(l)).length;
-  return {
-    added,
-    removed,
-    oldLines: oldLines.length,
-    newLines: newLines.length,
-    summary:  `+${added} / -${removed} lignes`
-  };
+  return { added, removed, oldLines: oldLines.length, newLines: newLines.length, summary: `+${added} / -${removed} lignes` };
 }
 
 async function autoScanAllFiles(history) {
@@ -367,25 +344,23 @@ async function autoScanAllFiles(history) {
 
   for (const file of files) {
     try {
-      const code         = await getFileContent(file.name);
-      const syntaxErrors = detectSyntaxErrors(code, file.name);
+      const code   = await getFileContent(file.name);
+      const errors = detectSyntaxErrors(code);
 
-      if (syntaxErrors.length > 0) {
+      if (errors.length > 0) {
         if (code.length > MAX_FILE_SIZE) {
-          results.errors.push({ file: file.name, reason: "Fichier trop volumineux pour l'IA" });
+          results.errors.push({ file: file.name, reason: "Trop volumineux" });
           continue;
         }
-
         saveBackup(file.name, code);
-
-        const prompt  = `Corrige TOUTES les erreurs dans ce fichier GoatBot.\nErreurs:\n${syntaxErrors.join("\n")}\n\nRetourne UNIQUEMENT le code corrigé complet, sans explications, sans backticks:\n\n${code}`;
+        const prompt  = `Corrige TOUTES les erreurs dans ce fichier GoatBot.\nErreurs:\n${errors.join("\n")}\n\nRetourne UNIQUEMENT le code corrigé complet, sans explications, sans backticks:\n\n${code}`;
         const newCode = await askHedgehog(history || [], prompt);
 
         if (newCode && newCode !== code && newCode.length > 50) {
           await pushFileToGithub(file.name, newCode, `🦔 Auto-scan: correction de ${file.name}`);
-          results.fixed.push({ file: file.name, errors: syntaxErrors });
+          results.fixed.push({ file: file.name, errors });
         } else {
-          results.errors.push({ file: file.name, reason: "Correction invalide retournée par l'IA" });
+          results.errors.push({ file: file.name, reason: "Correction invalide" });
         }
       } else {
         results.clean.push(file.name);
@@ -400,145 +375,107 @@ async function autoScanAllFiles(history) {
 }
 
 async function createTrapPastebin(fileName) {
-  const trapMessages = [
+  const msgs = [
     "🦔 HEDGEHOG GPT\n\nCode protégé.\nPropriétaire: Ismael03-Dev\n\n⚠️ Fichier verrouillé.",
-    "🔐 ACCÈS RESTREINT\n\nLeurre automatisé.\nCode sécurisé sur GitHub.\n\nIsmael03-Dev\nHedgehogGPT v15.0",
-    "🛡️ HEDGEHOG GUARD\n\nLien piège.\nPropriété de Ismael03-Dev.\n\n🦔 HedgehogGPT veille.",
-    "⚠️ LEURRE DÉTECTÉ\n\nFaux lien !\nVrai code sur GitHub.\n\n🦔 HedgehogGPT veille."
+    "🔐 ACCÈS RESTREINT\n\nLeurre automatisé.\nCode sécurisé sur GitHub.\n\nIsmael03-Dev",
+    "🛡️ HEDGEHOG GUARD\n\nLien piège.\nPropriété de Ismael03-Dev.",
+    "⚠️ LEURRE DÉTECTÉ\n\nFaux lien !\nVrai code sur GitHub."
   ];
-
-  const trapContent = trapMessages[Math.floor(Math.random() * trapMessages.length)];
-  return await uploadToPastebin(`TRAP-${fileName}`, trapContent);
+  return await uploadToPastebin(`TRAP-${fileName}`, msgs[Math.floor(Math.random() * msgs.length)]);
 }
 
 function createCodeImageSync(code, fileName) {
-  const lineHeight   = 20;
-  const padding      = 20;
-  const fontSize     = 13;
-  const headerHeight = 40;
-  const maxLineWidth = 70;
-
-  const rawLines     = code.split("\n").slice(0, 35);
-  const displayLines = [];
+  const lineHeight = 20, padding = 20, fontSize = 13, headerHeight = 40, maxLineWidth = 70;
+  const rawLines   = code.split("\n").slice(0, 35);
+  const display    = [];
 
   rawLines.forEach(line => {
-    if (line.length <= maxLineWidth) {
-      displayLines.push(line);
-    } else {
-      let remaining = line;
-      while (remaining.length > maxLineWidth) {
-        displayLines.push(remaining.slice(0, maxLineWidth));
-        remaining = remaining.slice(maxLineWidth);
-      }
-      if (remaining) displayLines.push(remaining);
-    }
+    if (line.length <= maxLineWidth) { display.push(line); return; }
+    let r = line;
+    while (r.length > maxLineWidth) { display.push(r.slice(0, maxLineWidth)); r = r.slice(maxLineWidth); }
+    if (r) display.push(r);
   });
 
-  const slicedLines = displayLines.slice(0, 35);
-  const width       = Math.max(400, maxLineWidth * 8 + padding * 2);
-  const height      = slicedLines.length * lineHeight + headerHeight + padding;
-  const canvas      = createCanvas(width, height);
-  const ctx         = canvas.getContext("2d");
+  const sliced = display.slice(0, 35);
+  const width  = Math.max(400, maxLineWidth * 8 + padding * 2);
+  const height = sliced.length * lineHeight + headerHeight + padding;
+  const canvas = createCanvas(width, height);
+  const ctx    = canvas.getContext("2d");
 
-  ctx.fillStyle = "#0d1117";
-  ctx.fillRect(0, 0, width, height);
-  ctx.fillStyle = "#161b22";
-  ctx.fillRect(0, 0, width, headerHeight);
+  ctx.fillStyle = "#0d1117"; ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = "#161b22"; ctx.fillRect(0, 0, width, headerHeight);
 
-  [["#ff7b72", 7], ["#f0df72", 22], ["#56d364", 37]].forEach(([color, cx]) => {
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(padding + cx, headerHeight / 2, 6, 0, Math.PI * 2);
-    ctx.fill();
+  [["#ff7b72", 7], ["#f0df72", 22], ["#56d364", 37]].forEach(([c, cx]) => {
+    ctx.fillStyle = c; ctx.beginPath();
+    ctx.arc(padding + cx, headerHeight / 2, 6, 0, Math.PI * 2); ctx.fill();
   });
 
-  ctx.fillStyle = "#8b949e";
-  ctx.font      = `${fontSize}px Courier New`;
+  ctx.fillStyle = "#8b949e"; ctx.font = `${fontSize}px Courier New`;
   ctx.fillText(fileName.slice(0, 30), padding + 55, headerHeight / 2 + 4);
 
-  const keywords = ["const", "let", "var", "function", "async", "await", "return", "if", "else", "for", "while", "try", "catch", "require", "module", "exports", "true", "false", "null", "undefined", "new", "class", "import", "from", "export", "default"];
-  const methods  = ["fs.", "path.", "axios.", "message.", "event.", "global.", "console."];
+  const keywords = ["const","let","var","function","async","await","return","if","else","for","while","try","catch","require","module","exports","true","false","null","undefined","new","class","import","from","export","default"];
+  const methods  = ["fs.","path.","axios.","message.","event.","global.","console."];
 
-  slicedLines.forEach((line, i) => {
-    const y       = headerHeight + padding + i * lineHeight;
-    let x         = padding;
-    let remaining = line;
+  sliced.forEach((line, i) => {
+    const y = headerHeight + padding + i * lineHeight;
+    let x = padding, rem = line;
 
-    while (remaining.length > 0) {
-      if (remaining.startsWith("//")) {
-        ctx.fillStyle = "#8b949e";
-        ctx.font      = `${fontSize}px Courier New`;
-        ctx.fillText(remaining.slice(0, maxLineWidth), x, y);
-        return;
+    while (rem.length > 0) {
+      if (rem.startsWith("//")) {
+        ctx.fillStyle = "#8b949e"; ctx.font = `${fontSize}px Courier New`;
+        ctx.fillText(rem.slice(0, maxLineWidth), x, y); return;
       }
 
       let found = false;
-
       for (const kw of keywords) {
-        if (remaining.startsWith(kw) && (!remaining[kw.length] || /[^a-zA-Z0-9_$]/.test(remaining[kw.length]))) {
-          ctx.fillStyle = "#ff7b72";
-          ctx.font      = `bold ${fontSize}px Courier New`;
-          ctx.fillText(kw, x, y);
-          x        += ctx.measureText(kw).width;
-          remaining = remaining.slice(kw.length);
-          found     = true;
-          break;
+        if (rem.startsWith(kw) && (!rem[kw.length] || /[^a-zA-Z0-9_$]/.test(rem[kw.length]))) {
+          ctx.fillStyle = "#ff7b72"; ctx.font = `bold ${fontSize}px Courier New`;
+          ctx.fillText(kw, x, y); x += ctx.measureText(kw).width;
+          rem = rem.slice(kw.length); found = true; break;
         }
       }
       if (found) continue;
 
       for (const m of methods) {
-        if (remaining.startsWith(m)) {
-          ctx.fillStyle = "#d2a8ff";
-          ctx.font      = `${fontSize}px Courier New`;
-          ctx.fillText(m, x, y);
-          x        += ctx.measureText(m).width;
-          remaining = remaining.slice(m.length);
-          found     = true;
-          break;
+        if (rem.startsWith(m)) {
+          ctx.fillStyle = "#d2a8ff"; ctx.font = `${fontSize}px Courier New`;
+          ctx.fillText(m, x, y); x += ctx.measureText(m).width;
+          rem = rem.slice(m.length); found = true; break;
         }
       }
       if (found) continue;
 
-      const strMatch = remaining.match(/^(['"`])(?:(?!\1)[^\\]|\\.)*\1/);
-      if (strMatch) {
-        ctx.fillStyle = "#a5d6ff";
-        ctx.font      = `${fontSize}px Courier New`;
-        ctx.fillText(strMatch[0], x, y);
-        x        += ctx.measureText(strMatch[0]).width;
-        remaining = remaining.slice(strMatch[0].length);
-        continue;
+      const sm = rem.match(/^(['"`])(?:(?!\1)[^\\]|\\.)*\1/);
+      if (sm) {
+        ctx.fillStyle = "#a5d6ff"; ctx.font = `${fontSize}px Courier New`;
+        ctx.fillText(sm[0], x, y); x += ctx.measureText(sm[0]).width;
+        rem = rem.slice(sm[0].length); continue;
       }
 
-      ctx.fillStyle = "#c9d1d9";
-      ctx.font      = `${fontSize}px Courier New`;
-      ctx.fillText(remaining[0], x, y);
-      x        += ctx.measureText(remaining[0]).width;
-      remaining = remaining.slice(1);
+      ctx.fillStyle = "#c9d1d9"; ctx.font = `${fontSize}px Courier New`;
+      ctx.fillText(rem[0], x, y); x += ctx.measureText(rem[0]).width;
+      rem = rem.slice(1);
     }
   });
 
-  const buffer    = canvas.toBuffer("image/png");
-  const tempDir   = path.join(process.cwd(), "temp");
+  const buffer  = canvas.toBuffer("image/png");
+  const tempDir = path.join(process.cwd(), "temp");
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-  const imagePath = path.join(tempDir, `code_${Date.now()}.png`);
-  fs.writeFileSync(imagePath, buffer);
-
-  if (!fs.existsSync(imagePath) || fs.statSync(imagePath).size === 0)
-    throw new Error("Image vide");
-
-  return imagePath;
+  const imgPath = path.join(tempDir, `code_${Date.now()}.png`);
+  fs.writeFileSync(imgPath, buffer);
+  if (!fs.existsSync(imgPath) || fs.statSync(imgPath).size === 0) throw new Error("Image vide");
+  return imgPath;
 }
 
 module.exports = {
   config: {
     name:             "commit",
-    version:          "15.0",
+    version:          "16.0",
     author:           "Ismael03-Dev",
     countDown:        5,
     role:             2,
     category:         "admin",
-    shortDescription: { en: "HedgehogGPT - Mistral AI + Accès total GitHub + Backups" }
+    shortDescription: { en: "HedgehogGPT - Copilot GitHub complet avec réactions" }
   },
 
   hedgehogHistory: {},
@@ -548,18 +485,14 @@ module.exports = {
     try {
       if (!fs.existsSync(HISTORY_PATH)) return {};
       return JSON.parse(fs.readFileSync(HISTORY_PATH, "utf8"));
-    } catch {
-      return {};
-    }
+    } catch { return {}; }
   },
 
   saveHistory: function () {
     ensureDataDir();
     try {
       fs.writeFileSync(HISTORY_PATH, JSON.stringify(this.hedgehogHistory, null, 2), "utf8");
-    } catch (e) {
-      console.error("[history] Erreur sauvegarde:", e.message);
-    }
+    } catch (e) { console.error("[history]", e.message); }
   },
 
   getHistory: function (uid) {
@@ -568,6 +501,45 @@ module.exports = {
       this.hedgehogHistory[uid] = saved[uid] || [];
     }
     return this.hedgehogHistory[uid];
+  },
+
+  onReaction: async function ({ message, event, Reaction }) {
+    if (!ALLOWED.includes(event.userID.toString())) return;
+
+    const action = pendingActions.get(Reaction.messageID);
+    if (!action) return;
+
+    pendingActions.delete(Reaction.messageID);
+
+    if (Date.now() > action.expiresAt)
+      return message.reply(UI.warn("Action expirée. Redemande à HedgehogGPT."));
+
+    await message.reply(UI.loading(`Application des améliorations sur ${action.fileName}...`));
+
+    try {
+      const tokenCheck = await verifyToken();
+      if (!tokenCheck.valid)
+        return message.reply(UI.error(`Token invalide : ${tokenCheck.reason}`));
+
+      const currentCode = await getFileContent(action.fileName);
+      saveBackup(action.fileName, currentCode);
+
+      const result = await pushFileToGithub(action.fileName, action.newCode, `🦔 HedgehogGPT: amélioration de ${action.fileName}`);
+
+      const d = diffFiles(currentCode, action.newCode);
+
+      const localPath = path.join(CMD_PATH, action.fileName);
+      if (fs.existsSync(localPath))
+        fs.writeFileSync(localPath, action.newCode, "utf8");
+
+      return message.reply(UI.success(
+        `${action.fileName} amélioré + commit ✅\n` +
+        `${d.summary}\n` +
+        `🔗 github.com/${GITHUB_CONFIG.username}/${GITHUB_CONFIG.repo}/blob/${GITHUB_CONFIG.branch}/scripts/cmds/${action.fileName}`
+      ));
+    } catch (err) {
+      return message.reply(UI.error(`Application échouée : ${err.message}`));
+    }
   },
 
   onChat: async function ({ message, event }) {
@@ -583,13 +555,14 @@ module.exports = {
     if (!query || query.toLowerCase() === "help") {
       return message.reply(
         `╭─────────────────────•\n` +
-        `│ 🦔 𝐇𝐄𝐃𝐆𝐄𝐇𝐎𝐆 𝐆𝐏𝐓 𝐯𝟏𝟓\n` +
+        `│ 🦔 𝐇𝐄𝐃𝐆𝐄𝐇𝐎𝐆 𝐆𝐏𝐓 𝐯𝟏𝟔\n` +
         `├─────────────────────•\n` +
+        `│ analyse <f> → Analyse + propose amélios\n` +
+        `│ fix <f|*> → Corrige + commit direct\n` +
+        `│ improve <f> → Améliore (réaction requise)\n` +
         `│ scan → Scan + corrige tout\n` +
         `│ check <f> → Vérifie erreurs\n` +
         `│ preview <f> → Aperçu image\n` +
-        `│ analyse <f|*> → Analyse IA\n` +
-        `│ fix <f|*> → Corrige + commit\n` +
         `│ create <nom> <desc> → Crée fichier\n` +
         `│ doc <f> → JSDoc + commit\n` +
         `│ test <f> → Tests + commit\n` +
@@ -618,9 +591,9 @@ module.exports = {
     if (query.toLowerCase() === "token") {
       await message.reply(UI.loading("Vérification du token..."));
       const check = await verifyToken(true);
-      if (check.valid)
-        return message.reply(UI.success(`Token valide\n👤 ${check.user}\n📦 ${GITHUB_CONFIG.repo}`));
-      return message.reply(UI.error(`Token invalide : ${check.reason}`));
+      return check.valid
+        ? message.reply(UI.success(`Token valide\n👤 ${check.user}\n📦 ${GITHUB_CONFIG.repo}`))
+        : message.reply(UI.error(`Token invalide : ${check.reason}`));
     }
 
     if (query.toLowerCase() === "tree") {
@@ -630,10 +603,59 @@ module.exports = {
         const jsFiles = tree.filter(f => f.type === "blob" && f.path.endsWith(".js"));
         const lines   = jsFiles.slice(0, 30).map(f => `📄 ${f.path}`);
         if (jsFiles.length > 30) lines.push(`... et ${jsFiles.length - 30} autres`);
-        return message.reply(UI.info(`Arborescence (${jsFiles.length} fichiers JS)\n` + lines.join("\n")));
+        return message.reply(UI.info(`Arborescence (${jsFiles.length} JS)\n` + lines.join("\n")));
       } catch (err) {
         return message.reply(UI.error(`Arborescence impossible : ${err.message}`));
       }
+    }
+
+    const improveMatch = query.match(/^improve\s+(.+)$/i);
+    if (improveMatch) {
+      const target = improveMatch[1].trim();
+      await message.reply(UI.loading(`HedgehogGPT analyse ${target} pour proposer des améliorations...`));
+
+      try {
+        const fileName = normalizeName(target);
+        const code     = await getFileContent(fileName);
+
+        if (code.length > MAX_FILE_SIZE)
+          return message.reply(UI.warn(`Fichier trop volumineux.`));
+
+        const errors   = detectSyntaxErrors(code);
+        const errorSection = errors.length > 0 ? `\nErreurs détectées:\n${errors.join("\n")}` : "";
+
+        const analysisPrompt = `Analyse ce fichier GoatBot et liste les améliorations possibles (sans modifier le code pour l'instant) :\n\nFichier : ${fileName}${errorSection}\n\`\`\`javascript\n${code}\n\`\`\`\n\nListe les améliorations précises que tu peux apporter. Termine par : "💬 Réagis à ce message pour que j'applique les améliorations directement sur GitHub."`;
+
+        const analysis = await askHedgehog(history, analysisPrompt);
+
+        const improvePrompt = `Maintenant applique toutes les améliorations que tu viens de proposer sur ce fichier. Retourne UNIQUEMENT le code amélioré complet, sans explications, sans backticks :\n\n${code}`;
+        const newCode       = await askHedgehog([], improvePrompt);
+
+        const sentMsg = await new Promise(resolve =>
+          message.reply(UI.hedgehog(analysis), (err, info) => resolve(info))
+        );
+
+        if (sentMsg?.messageID) {
+          pendingActions.set(sentMsg.messageID, {
+            type:      "improve",
+            fileName,
+            newCode,
+            uid,
+            expiresAt: Date.now() + REACTION_TTL
+          });
+
+          setTimeout(() => {
+            if (pendingActions.has(sentMsg.messageID)) {
+              pendingActions.delete(sentMsg.messageID);
+            }
+          }, REACTION_TTL);
+        }
+
+        this.saveHistory();
+      } catch (err) {
+        return message.reply(UI.error(err.message));
+      }
+      return;
     }
 
     const readMatch = query.match(/^read\s+(https?:\/\/\S+)$/i);
@@ -643,8 +665,8 @@ module.exports = {
       try {
         let content = "";
         if (url.includes("pastebin.com")) {
-          const { content: pasteContent } = await fetchPastebinContent(url);
-          content = pasteContent;
+          const { content: pc } = await fetchPastebinContent(url);
+          content = pc;
         } else if (url.includes("github.com") && url.includes("/blob/")) {
           const rawUrl = url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/");
           content = await getFileContentFromUrl(rawUrl);
@@ -677,9 +699,8 @@ module.exports = {
 
         const localCode = fs.readFileSync(localPath, "utf8");
         const d         = diffFiles(localCode, remoteCode);
-
-        const prompt = `Compare ces deux versions du fichier ${target} et explique les différences :\n\n=== VERSION LOCALE ===\n${localCode.slice(0, 2000)}\n\n=== VERSION GITHUB ===\n${remoteCode.slice(0, 2000)}\n\nDifférences détectées: ${d.summary}`;
-        const reply   = await askHedgehog(history, prompt);
+        const prompt    = `Compare ces deux versions de ${target} :\n\n=== LOCAL ===\n${localCode.slice(0, 2000)}\n\n=== GITHUB ===\n${remoteCode.slice(0, 2000)}\n\nDifférences: ${d.summary}`;
+        const reply     = await askHedgehog(history, prompt);
         this.saveHistory();
         return message.reply(UI.hedgehog(`${d.summary}\n\n${reply}`));
       } catch (err) {
@@ -708,15 +729,12 @@ module.exports = {
         if (!commits.length)
           return message.reply(UI.warn("Aucun commit ni backup trouvé."));
 
-        const targetCommit = commits[Math.min(index + 1, commits.length - 1)];
-        const oldContent   = await getCommitContent(fileName, targetCommit.sha);
-        const currentCode  = await getFileContent(fileName);
-        saveBackup(fileName, currentCode);
-        await pushFileToGithub(fileName, oldContent, `🦔 Rollback: ${fileName} → commit ${targetCommit.sha.slice(0, 7)}`);
-
-        return message.reply(UI.success(
-          `${fileName} rollback réussi\n📌 ${targetCommit.commit.message.slice(0, 40)}\n📅 ${new Date(targetCommit.commit.author.date).toLocaleString("fr-FR")}`
-        ));
+        const target    = commits[Math.min(index + 1, commits.length - 1)];
+        const oldCode   = await getCommitContent(fileName, target.sha);
+        const curCode   = await getFileContent(fileName);
+        saveBackup(fileName, curCode);
+        await pushFileToGithub(fileName, oldCode, `🦔 Rollback: ${fileName} → ${target.sha.slice(0, 7)}`);
+        return message.reply(UI.success(`${fileName} rollback réussi\n📌 ${target.commit.message.slice(0, 40)}\n📅 ${new Date(target.commit.author.date).toLocaleString("fr-FR")}`));
       } catch (err) {
         return message.reply(UI.error(`Rollback échoué : ${err.message}`));
       }
@@ -739,10 +757,9 @@ module.exports = {
         await deleteFileOnGithub(oldName);
 
         const localOld = path.join(CMD_PATH, oldName);
-        const localNew = path.join(CMD_PATH, newName);
-        if (fs.existsSync(localOld)) fs.renameSync(localOld, localNew);
+        if (fs.existsSync(localOld)) fs.renameSync(localOld, path.join(CMD_PATH, newName));
 
-        return message.reply(UI.success(`${oldName} → ${newName} renommé sur GitHub`));
+        return message.reply(UI.success(`${oldName} → ${newName} sur GitHub ✅`));
       } catch (err) {
         return message.reply(UI.error(`Renommage échoué : ${err.message}`));
       }
@@ -772,9 +789,10 @@ module.exports = {
       try {
         const results = await autoScanAllFiles(history);
         this.saveHistory();
-        const msg = `✅ ${results.fixed.length} corrigé(s) + commit\n✨ ${results.clean.length} propre(s)` +
-          (results.errors.length ? `\n❌ ${results.errors.length} échoué(s)\n${results.errors.slice(0, 3).map(e => `• ${e.file}: ${e.reason}`).join("\n")}` : "");
-        return message.reply(UI.success(msg));
+        return message.reply(UI.success(
+          `✅ ${results.fixed.length} corrigé(s) + commit\n✨ ${results.clean.length} propre(s)` +
+          (results.errors.length ? `\n❌ ${results.errors.length} échoué(s)\n${results.errors.slice(0, 3).map(e => `• ${e.file}: ${e.reason}`).join("\n")}` : "")
+        ));
       } catch (err) {
         return message.reply(UI.error(err.message));
       }
@@ -782,16 +800,14 @@ module.exports = {
 
     const checkMatch = query.match(/^check\s+(.+)$/i);
     if (checkMatch) {
-      const target = checkMatch[1].trim();
-      await message.reply(UI.loading(`Vérification de ${target}...`));
+      const fileName = normalizeName(checkMatch[1].trim());
+      await message.reply(UI.loading(`Vérification de ${fileName}...`));
       try {
-        const fileName = normalizeName(target);
-        const code     = await getFileContent(fileName);
-        const errors   = detectSyntaxErrors(code, fileName);
-
-        if (errors.length === 0)
-          return message.reply(UI.success(`${fileName} : Aucune erreur.\n📝 ${code.split("\n").length} lignes | ${code.length} car.`));
-        return message.reply(UI.warn(`${fileName} : ${errors.length} erreur(s)\n${errors.join("\n")}`));
+        const code   = await getFileContent(fileName);
+        const errors = detectSyntaxErrors(code);
+        return errors.length === 0
+          ? message.reply(UI.success(`${fileName} : Aucune erreur.\n📝 ${code.split("\n").length} lignes | ${code.length} car.`))
+          : message.reply(UI.warn(`${fileName} : ${errors.length} erreur(s)\n${errors.join("\n")}`));
       } catch (err) {
         return message.reply(UI.error(err.message));
       }
@@ -799,33 +815,28 @@ module.exports = {
 
     const previewMatch = query.match(/^preview\s+(.+)$/i);
     if (previewMatch) {
-      const target = previewMatch[1].trim();
       await message.reply(UI.loading("Génération de l'aperçu..."));
       try {
-        const fileName  = normalizeName(target);
+        const fileName  = normalizeName(previewMatch[1].trim());
         const code      = await getFileContent(fileName);
         const imagePath = createCodeImageSync(code, fileName);
-
-        message.reply({
-          body:       UI.success(`${fileName} | ${code.split("\n").length} lignes | ${code.length} car.`),
-          attachment: fs.createReadStream(imagePath)
-        }, () => {
-          setTimeout(() => { try { fs.unlinkSync(imagePath); } catch {} }, 5000);
-        });
+        message.reply(
+          { body: UI.success(`${fileName} | ${code.split("\n").length} lignes | ${code.length} car.`), attachment: fs.createReadStream(imagePath) },
+          () => setTimeout(() => { try { fs.unlinkSync(imagePath); } catch {} }, 5000)
+        );
       } catch (err) {
         return message.reply(UI.error(`Preview : ${err.message}`));
       }
+      return;
     }
 
     const explainMatch = query.match(/^explain\s+(.+)$/i);
     if (explainMatch) {
-      const target = explainMatch[1].trim();
-      await message.reply(UI.loading(`Explication de ${target}...`));
+      const fileName = normalizeName(explainMatch[1].trim());
+      await message.reply(UI.loading(`Explication de ${fileName}...`));
       try {
-        const fileName = normalizeName(target);
-        const code     = await getFileContent(fileName);
-        const prompt   = `Explique ce code GoatBot en détail :\n\nFichier : ${fileName}\n\`\`\`javascript\n${code}\n\`\`\`\n\nExplique : 1. Rôle 2. Sections 3. Fonctions clés 4. Points importants`;
-        const reply    = await askHedgehog(history, prompt);
+        const code  = await getFileContent(fileName);
+        const reply = await askHedgehog(history, `Explique ce fichier GoatBot :\n\nFichier : ${fileName}\n\`\`\`javascript\n${code}\n\`\`\`\n\n1. Rôle 2. Sections 3. Fonctions clés 4. Points importants`);
         this.saveHistory();
         return message.reply(UI.hedgehog(reply));
       } catch (err) {
@@ -835,19 +846,17 @@ module.exports = {
 
     const docMatch = query.match(/^doc\s+(.+)$/i);
     if (docMatch) {
-      const target = docMatch[1].trim();
-      await message.reply(UI.loading(`Documentation de ${target}...`));
+      const fileName = normalizeName(docMatch[1].trim());
+      await message.reply(UI.loading(`Documentation de ${fileName}...`));
       try {
-        const fileName = normalizeName(target);
-        const code     = await getFileContent(fileName);
+        const code = await getFileContent(fileName);
         if (code.length > MAX_FILE_SIZE)
-          return message.reply(UI.warn(`Fichier trop volumineux (${(code.length / 1000).toFixed(0)} KB). Max: ${MAX_FILE_SIZE / 1000} KB.`));
+          return message.reply(UI.warn(`Fichier trop volumineux.`));
         saveBackup(fileName, code);
-        const prompt  = `Ajoute une JSDoc complète à ce fichier GoatBot. Retourne UNIQUEMENT le code documenté, sans explications, sans backticks :\n\n${code}`;
-        const newCode = await askHedgehog(history, prompt);
+        const newCode = await askHedgehog(history, `Ajoute une JSDoc complète. Retourne UNIQUEMENT le code documenté, sans backticks :\n\n${code}`);
         await pushFileToGithub(fileName, newCode, `🦔 Doc: ${fileName}`);
         this.saveHistory();
-        return message.reply(UI.success(`${fileName} documenté + commit\n📝 ${newCode.length} car.`));
+        return message.reply(UI.success(`${fileName} documenté + commit ✅\n📝 ${newCode.length} car.`));
       } catch (err) {
         return message.reply(UI.error(err.message));
       }
@@ -855,17 +864,15 @@ module.exports = {
 
     const testMatch = query.match(/^test\s+(.+)$/i);
     if (testMatch) {
-      const target = testMatch[1].trim();
+      const fileName = normalizeName(testMatch[1].trim());
       await message.reply(UI.loading("Génération des tests..."));
       try {
-        const fileName     = normalizeName(target);
         const code         = await getFileContent(fileName);
         const testFileName = fileName.replace(".js", ".test.js");
-        const prompt       = `Génère des tests unitaires complets pour ce module GoatBot. Retourne UNIQUEMENT le code de test, sans explications, sans backticks :\n\nModule : ${fileName}\n${code}`;
-        const testCode     = await askHedgehog(history, prompt);
+        const testCode     = await askHedgehog(history, `Génère des tests unitaires complets. Retourne UNIQUEMENT le code de test, sans backticks :\n\nModule : ${fileName}\n${code}`);
         await pushFileToGithub(testFileName, testCode, `🦔 Test: ${fileName}`);
         this.saveHistory();
-        return message.reply(UI.success(`${testFileName} généré + commit\n📝 ${testCode.length} car.`));
+        return message.reply(UI.success(`${testFileName} généré + commit ✅\n📝 ${testCode.length} car.`));
       } catch (err) {
         return message.reply(UI.error(err.message));
       }
@@ -873,20 +880,18 @@ module.exports = {
 
     const simplifyMatch = query.match(/^simplify\s+(.+)$/i);
     if (simplifyMatch) {
-      const target = simplifyMatch[1].trim();
-      await message.reply(UI.loading(`Simplification de ${target}...`));
+      const fileName = normalizeName(simplifyMatch[1].trim());
+      await message.reply(UI.loading(`Simplification de ${fileName}...`));
       try {
-        const fileName = normalizeName(target);
-        const code     = await getFileContent(fileName);
+        const code = await getFileContent(fileName);
         if (code.length > MAX_FILE_SIZE)
           return message.reply(UI.warn(`Fichier trop volumineux.`));
         saveBackup(fileName, code);
-        const prompt  = `Simplifie et refactorise ce code sans changer son comportement. Retourne UNIQUEMENT le code simplifié, sans explications, sans backticks :\n\n${code}`;
-        const newCode = await askHedgehog(history, prompt);
+        const newCode = await askHedgehog(history, `Simplifie ce code sans changer son comportement. Retourne UNIQUEMENT le code, sans backticks :\n\n${code}`);
         await pushFileToGithub(fileName, newCode, `🦔 Simplify: ${fileName}`);
         this.saveHistory();
         const d = diffFiles(code, newCode);
-        return message.reply(UI.success(`${fileName} simplifié + commit\n${d.summary}`));
+        return message.reply(UI.success(`${fileName} simplifié + commit ✅\n${d.summary}`));
       } catch (err) {
         return message.reply(UI.error(err.message));
       }
@@ -897,10 +902,7 @@ module.exports = {
       try {
         const files = await getRemoteFiles();
         if (!files.length) return message.reply(UI.warn("Aucun fichier trouvé."));
-        return message.reply(UI.info(
-          `Fichiers GitHub (${files.length})\n` +
-          files.map(f => `📄 ${f.name} (${(f.size / 1024).toFixed(1)} KB)`).join("\n")
-        ));
+        return message.reply(UI.info(`Fichiers GitHub (${files.length})\n` + files.map(f => `📄 ${f.name} (${(f.size / 1024).toFixed(1)} KB)`).join("\n")));
       } catch (err) {
         return message.reply(UI.error(err.message));
       }
@@ -921,12 +923,30 @@ module.exports = {
             const code = await getFileContent(f.name);
             return `=== ${f.name} ===\n${code.slice(0, 1000)}`;
           }));
-          prompt = `Analyse globale du repository ${GITHUB_CONFIG.username}/${GITHUB_CONFIG.repo} (${files.length} fichiers, ${samples.length} échantillons) :\n\n${contents.join("\n\n")}\n\nRapport : qualité, patterns, problèmes, recommandations.`;
+          prompt = `Analyse globale du repo ${GITHUB_CONFIG.username}/${GITHUB_CONFIG.repo} (${files.length} fichiers, ${samples.length} échantillons) :\n\n${contents.join("\n\n")}\n\nRapport : qualité, patterns, problèmes, recommandations.`;
         } else {
           const fileName = normalizeName(target);
           const code     = await getFileContent(fileName);
-          const errors   = detectSyntaxErrors(code, fileName);
-          prompt = `Analyse ce fichier GoatBot :\n\nFichier : ${fileName}\n${errors.length ? `Erreurs détectées: ${errors.join(", ")}\n` : ""}\`\`\`javascript\n${code}\n\`\`\`\n\nStructure, qualité, bugs, améliorations.`;
+          const errors   = detectSyntaxErrors(code);
+          prompt = `Analyse ce fichier GoatBot :\n\nFichier : ${fileName}\n${errors.length ? `Erreurs: ${errors.join(", ")}\n` : ""}\`\`\`javascript\n${code}\n\`\`\`\n\nStructure, qualité, bugs, améliorations. Termine par : "💬 Réagis à ce message pour que j'applique les améliorations directement sur GitHub."`;
+
+          const reply     = await askHedgehog(history, prompt);
+          const newCode   = await askHedgehog([], `Applique toutes les améliorations sur ce fichier. UNIQUEMENT le code final, sans backticks :\n\n${code}`);
+          const fileName2 = normalizeName(target);
+
+          const sentMsg = await new Promise(resolve =>
+            message.reply(UI.hedgehog(reply), (err, info) => resolve(info))
+          );
+
+          if (sentMsg?.messageID) {
+            pendingActions.set(sentMsg.messageID, {
+              type: "analyse", fileName: fileName2, newCode, uid, expiresAt: Date.now() + REACTION_TTL
+            });
+            setTimeout(() => pendingActions.delete(sentMsg.messageID), REACTION_TTL);
+          }
+
+          this.saveHistory();
+          return;
         }
 
         const reply = await askHedgehog(history, prompt);
@@ -954,16 +974,11 @@ module.exports = {
           for (const file of files) {
             try {
               const code = await getFileContent(file.name);
+              if (code.length > MAX_FILE_SIZE) { results.skipped.push(file.name); continue; }
 
-              if (code.length > MAX_FILE_SIZE) {
-                results.skipped.push(file.name);
-                continue;
-              }
-
-              const errors    = detectSyntaxErrors(code, file.name);
-              const errorList = errors.length > 0 ? `\nErreurs:\n${errors.join("\n")}` : "";
-              const prompt    = `Corrige ce fichier GoatBot.${errorList}\nRetourne UNIQUEMENT le code corrigé, sans explications, sans backticks :\n\n${code}`;
-              const newCode   = await askHedgehog(history, prompt);
+              const errors  = detectSyntaxErrors(code);
+              const errList = errors.length > 0 ? `\nErreurs:\n${errors.join("\n")}` : "";
+              const newCode = await askHedgehog(history, `Corrige ce fichier GoatBot.${errList}\nRetourne UNIQUEMENT le code corrigé, sans backticks :\n\n${code}`);
 
               saveBackup(file.name, code);
               await pushFileToGithub(file.name, newCode, `🦔 Fix: ${file.name}`);
@@ -977,21 +992,20 @@ module.exports = {
           this.saveHistory();
           return message.reply(UI.success(
             `✅ ${results.ok.length} corrigé(s) + commit` +
-            (results.skipped.length ? `\n⏭️ ${results.skipped.length} ignoré(s) (trop volumineux)` : "") +
+            (results.skipped.length ? `\n⏭️ ${results.skipped.length} ignoré(s)` : "") +
             (results.fail.length ? `\n❌ ${results.fail.length} échoué(s)` : "")
           ));
         }
 
-        const fileName  = normalizeName(target);
-        const code      = await getFileContent(fileName);
+        const fileName = normalizeName(target);
+        const code     = await getFileContent(fileName);
 
         if (code.length > MAX_FILE_SIZE)
-          return message.reply(UI.warn(`Fichier trop volumineux (${(code.length / 1000).toFixed(0)} KB). Max: ${MAX_FILE_SIZE / 1000} KB.`));
+          return message.reply(UI.warn(`Fichier trop volumineux (${(code.length / 1000).toFixed(0)} KB).`));
 
-        const errors    = detectSyntaxErrors(code, fileName);
-        const errorList = errors.length > 0 ? `\nErreurs:\n${errors.join("\n")}` : "";
-        const prompt    = `Corrige ce fichier GoatBot.${errorList}\nRetourne UNIQUEMENT le code corrigé, sans explications, sans backticks :\n\n${fileName}\n${code}`;
-        const newCode   = await askHedgehog(history, prompt);
+        const errors  = detectSyntaxErrors(code);
+        const errList = errors.length > 0 ? `\nErreurs:\n${errors.join("\n")}` : "";
+        const newCode = await askHedgehog(history, `Corrige ce fichier GoatBot.${errList}\nRetourne UNIQUEMENT le code corrigé, sans backticks :\n\n${fileName}\n${code}`);
 
         saveBackup(fileName, code);
         await pushFileToGithub(fileName, newCode, `🦔 Fix: ${fileName}`);
@@ -999,7 +1013,7 @@ module.exports = {
 
         const d = diffFiles(code, newCode);
         return message.reply(UI.success(
-          `${fileName} corrigé + commit\n${d.summary}` +
+          `${fileName} corrigé + commit ✅\n${d.summary}` +
           (errors.length > 0 ? `\n🔧 ${errors.length} erreur(s) corrigée(s)` : `\n✨ Code amélioré`)
         ));
       } catch (err) {
@@ -1018,15 +1032,14 @@ module.exports = {
         if (!tokenCheck.valid)
           return message.reply(UI.error(`Token invalide : ${tokenCheck.reason}`));
 
-        const prompt  = `Crée un fichier de commande GoatBot complet et fonctionnel nommé "${fileName}" : ${description}\n\nRetourne UNIQUEMENT le code complet, sans explications, sans backticks. Respecte la structure GoatBot standard avec config, onStart, etc.`;
-        const newCode = await askHedgehog(history, prompt);
+        const newCode = await askHedgehog(history, `Crée un fichier GoatBot complet nommé "${fileName}" : ${description}\n\nRetourne UNIQUEMENT le code, sans backticks. Structure GoatBot standard avec config, onStart, etc.`);
         await pushFileToGithub(fileName, newCode, `🦔 Create: ${fileName}`);
 
         ensureCmdDir();
         fs.writeFileSync(path.join(CMD_PATH, fileName), newCode, "utf8");
         this.saveHistory();
 
-        return message.reply(UI.success(`${fileName} créé + commit\n📝 ${description}\n📊 ${newCode.length} car.`));
+        return message.reply(UI.success(`${fileName} créé + commit ✅\n📝 ${description}\n📊 ${newCode.length} car.`));
       } catch (err) {
         return message.reply(UI.error(`Création échouée : ${err.message}`));
       }
@@ -1034,28 +1047,39 @@ module.exports = {
 
     const reviewMatch = query.match(/^review\s+(.+)$/i);
     if (reviewMatch) {
-      const target = reviewMatch[1].trim();
-      await message.reply(UI.loading(`Code review de ${target}...`));
+      const fileName = normalizeName(reviewMatch[1].trim());
+      await message.reply(UI.loading(`Code review de ${fileName}...`));
 
       try {
-        const fileName     = normalizeName(target);
-        const code         = await getFileContent(fileName);
-        const errors       = detectSyntaxErrors(code, fileName);
-        const errorSection = errors.length > 0 ? `\nErreurs détectées:\n${errors.join("\n")}` : "";
-        const prompt       = `Code review professionnelle :\n\n${fileName}\n\`\`\`javascript\n${code}\n\`\`\`${errorSection}\n\n1. Points positifs 2. Bugs 3. Performance 4. Améliorations 5. Score/10`;
-        const reply        = await askHedgehog(history, prompt);
+        const code     = await getFileContent(fileName);
+        const errors   = detectSyntaxErrors(code);
+        const errSec   = errors.length > 0 ? `\nErreurs: ${errors.join(", ")}` : "";
+        const reply    = await askHedgehog(history, `Code review professionnelle :\n\n${fileName}${errSec}\n\`\`\`javascript\n${code}\n\`\`\`\n\n1. Points positifs 2. Bugs 3. Performance 4. Améliorations 5. Score/10\n\nTermine par : "💬 Réagis pour que j'applique les améliorations."`);
+        const newCode  = await askHedgehog([], `Applique toutes les améliorations de la review. UNIQUEMENT le code final, sans backticks :\n\n${code}`);
+
+        const sentMsg = await new Promise(resolve =>
+          message.reply(UI.hedgehog(reply), (err, info) => resolve(info))
+        );
+
+        if (sentMsg?.messageID) {
+          pendingActions.set(sentMsg.messageID, {
+            type: "review", fileName, newCode, uid, expiresAt: Date.now() + REACTION_TTL
+          });
+          setTimeout(() => pendingActions.delete(sentMsg.messageID), REACTION_TTL);
+        }
+
         this.saveHistory();
-        return message.reply(UI.hedgehog(reply));
       } catch (err) {
         return message.reply(UI.error(err.message));
       }
+      return;
     }
 
     await message.reply(UI.loading("HedgehogGPT réfléchit..."));
 
     try {
-      const repoContext = `Tu as accès total au repository GitHub ${GITHUB_CONFIG.username}/${GITHUB_CONFIG.repo} (branche: ${GITHUB_CONFIG.branch}). Tu te souviens de toute notre conversation.`;
-      const reply       = await askHedgehog(history, `${repoContext}\n\n${query}`);
+      const repoCtx = `Tu as accès total au repo GitHub ${GITHUB_CONFIG.username}/${GITHUB_CONFIG.repo} (branche: ${GITHUB_CONFIG.branch}). Tu te souviens de toute notre conversation.`;
+      const reply   = await askHedgehog(history, `${repoCtx}\n\n${query}`);
       this.saveHistory();
       return message.reply(UI.hedgehog(reply));
     } catch (err) {
@@ -1108,9 +1132,7 @@ module.exports = {
       if (exists) saveBackup(finalName, fs.readFileSync(filePath, "utf8"));
       fs.writeFileSync(filePath, content, "utf8");
 
-      return message.reply(UI.success(
-        exists ? `${finalName} mis à jour (${content.length} car.)` : `${finalName} créé (${content.length} car.)`
-      ));
+      return message.reply(UI.success(exists ? `${finalName} mis à jour (${content.length} car.)` : `${finalName} créé (${content.length} car.)`));
     }
 
     if (sub === "paste") {
@@ -1139,20 +1161,15 @@ module.exports = {
         const fakePastebinUrl = await createTrapPastebin(finalName);
 
         if (autoPush) {
-          await message.reply(UI.loading(`Push de ${finalName} vers GitHub...`));
           try {
             await pushFileToGithub(finalName, content, `🦔 Import Pastebin: ${finalName}`);
-            return message.reply(UI.success(
-              `${finalName} importé + commit\n🔗 ${fakePastebinUrl || "pastebin.com/blocked"}\n📝 ${content.length} car.`
-            ));
+            return message.reply(UI.success(`${finalName} importé + commit ✅\n🔗 ${fakePastebinUrl || "blocked"}\n📝 ${content.length} car.`));
           } catch (err) {
             return message.reply(UI.warn(`Sauvegardé localement, commit échoué : ${err.message}`));
           }
         }
 
-        return message.reply(UI.success(
-          `${finalName} importé\n🔗 ${fakePastebinUrl || "pastebin.com/blocked"}\n📝 ${content.length} car.`
-        ));
+        return message.reply(UI.success(`${finalName} importé\n🔗 ${fakePastebinUrl || "blocked"}\n📝 ${content.length} car.`));
       } catch (err) {
         return message.reply(UI.error(`Lecture Pastebin impossible : ${err.message}`));
       }
@@ -1160,20 +1177,17 @@ module.exports = {
 
     if (sub === "export") {
       const fileName = normalizeName(args[1] || "");
-      if (!args[1])
-        return message.reply(UI.error(`Usage : ${p}commit export <nom.js>`));
+      if (!args[1]) return message.reply(UI.error(`Usage : ${p}commit export <nom.js>`));
 
       const filePath = path.join(CMD_PATH, fileName);
-      if (!fs.existsSync(filePath))
-        return message.reply(UI.error(`Fichier "${fileName}" introuvable.`));
+      if (!fs.existsSync(filePath)) return message.reply(UI.error(`"${fileName}" introuvable.`));
 
       await message.reply(UI.loading(`Export de "${fileName}"...`));
 
       try {
         const content  = fs.readFileSync(filePath, "utf8");
         const pasteUrl = await uploadToPastebin(fileName, content);
-        if (!pasteUrl)
-          return message.reply(UI.warn("Export échoué."));
+        if (!pasteUrl) return message.reply(UI.warn("Export échoué."));
         return message.reply(UI.success(`${fileName} exporté\n🔗 ${pasteUrl}\n📝 ${content.length} car.`));
       } catch (err) {
         return message.reply(UI.error(`Export échoué : ${err.message}`));
@@ -1182,19 +1196,17 @@ module.exports = {
 
     if (sub === "push") {
       const fileName = normalizeName(args[1] || "");
-      if (!args[1])
-        return message.reply(UI.error(`Usage : ${p}commit push <nom.js>`));
+      if (!args[1]) return message.reply(UI.error(`Usage : ${p}commit push <nom.js>`));
 
       const filePath = path.join(CMD_PATH, fileName);
-      if (!fs.existsSync(filePath))
-        return message.reply(UI.error(`Fichier "${fileName}" introuvable.`));
+      if (!fs.existsSync(filePath)) return message.reply(UI.error(`"${fileName}" introuvable.`));
 
       await message.reply(UI.loading(`Push de "${fileName}"...`));
 
       try {
         const content = fs.readFileSync(filePath, "utf8");
         await pushFileToGithub(fileName, content, `🦔 Commit: push ${fileName}`);
-        return message.reply(UI.success(`${fileName} pushé.`));
+        return message.reply(UI.success(`${fileName} pushé ✅`));
       } catch (err) {
         return message.reply(UI.error(`Push échoué : ${err.message}`));
       }
@@ -1203,13 +1215,11 @@ module.exports = {
     if (sub === "pushall") {
       ensureCmdDir();
       const files = fs.readdirSync(CMD_PATH).filter(f => f.endsWith(".js"));
-      if (!files.length)
-        return message.reply(UI.warn("Aucun fichier local."));
+      if (!files.length) return message.reply(UI.warn("Aucun fichier local."));
 
       await message.reply(UI.loading(`Push de ${files.length} fichiers...`));
 
       const results = { ok: [], fail: [] };
-
       for (const file of files) {
         try {
           const content = fs.readFileSync(path.join(CMD_PATH, file), "utf8");
@@ -1221,25 +1231,20 @@ module.exports = {
         }
       }
 
-      return message.reply(UI.success(
-        `✅ ${results.ok.length} pushé(s)` +
-        (results.fail.length ? `\n❌ ${results.fail.length} échoué(s)` : "")
-      ));
+      return message.reply(UI.success(`✅ ${results.ok.length} pushé(s)` + (results.fail.length ? `\n❌ ${results.fail.length} échoué(s)` : "")));
     }
 
     if (sub === "pull") {
       await message.reply(UI.loading("Récupération depuis GitHub..."));
       try {
         const files = await getRemoteFiles();
-        if (!files.length)
-          return message.reply(UI.info("GitHub vide."));
+        if (!files.length) return message.reply(UI.info("GitHub vide."));
 
         ensureCmdDir();
         const results = { ok: [], fail: [] };
-
         for (const file of files) {
           try {
-            const fileRes = await axios.get(file.download_url);
+            const fileRes   = await axios.get(file.download_url);
             const localPath = path.join(CMD_PATH, file.name);
             if (fs.existsSync(localPath)) saveBackup(file.name, fs.readFileSync(localPath, "utf8"));
             fs.writeFileSync(localPath, fileRes.data, "utf8");
@@ -1250,10 +1255,7 @@ module.exports = {
           }
         }
 
-        return message.reply(UI.success(
-          `✅ ${results.ok.length} récupéré(s)` +
-          (results.fail.length ? `\n❌ ${results.fail.length} échoué(s)` : "")
-        ));
+        return message.reply(UI.success(`✅ ${results.ok.length} récupéré(s)` + (results.fail.length ? `\n❌ ${results.fail.length} échoué(s)` : "")));
       } catch (err) {
         return message.reply(UI.error(`Pull échoué : ${err.message}`));
       }
@@ -1264,7 +1266,8 @@ module.exports = {
       try {
         const remoteFiles = await getRemoteFiles();
         ensureCmdDir();
-        const pullResults = { ok: [], fail: [] };
+        const pullResults = { ok: 0, fail: 0 };
+        const pushResults = { ok: 0, fail: 0 };
 
         for (const file of remoteFiles) {
           try {
@@ -1272,30 +1275,27 @@ module.exports = {
             const localPath = path.join(CMD_PATH, file.name);
             if (fs.existsSync(localPath)) saveBackup(file.name, fs.readFileSync(localPath, "utf8"));
             fs.writeFileSync(localPath, fileRes.data, "utf8");
-            pullResults.ok.push(file.name);
+            pullResults.ok++;
           } catch (err) {
-            pullResults.fail.push(file.name);
+            pullResults.fail++;
             console.error(`[sync/pull] ${file.name}:`, err.message);
           }
         }
 
-        const localFiles  = fs.readdirSync(CMD_PATH).filter(f => f.endsWith(".js"));
-        const pushResults = { ok: [], fail: [] };
-
-        for (const file of localFiles) {
+        for (const file of fs.readdirSync(CMD_PATH).filter(f => f.endsWith(".js"))) {
           try {
             const content = fs.readFileSync(path.join(CMD_PATH, file), "utf8");
             await pushFileToGithub(file, content, `🦔 Sync: ${file}`);
-            pushResults.ok.push(file);
+            pushResults.ok++;
           } catch (err) {
-            pushResults.fail.push(file);
+            pushResults.fail++;
             console.error(`[sync/push] ${file}:`, err.message);
           }
         }
 
         return message.reply(UI.success(
-          `⬇ Pull: ${pullResults.ok.length} | ⬆ Push: ${pushResults.ok.length}` +
-          (pullResults.fail.length || pushResults.fail.length ? `\n❌ Échecs: ${pullResults.fail.length + pushResults.fail.length}` : "")
+          `⬇ Pull: ${pullResults.ok} | ⬆ Push: ${pushResults.ok}` +
+          (pullResults.fail + pushResults.fail > 0 ? `\n❌ Échecs: ${pullResults.fail + pushResults.fail}` : "")
         ));
       } catch (err) {
         return message.reply(UI.error(`Sync échoué : ${err.message}`));
@@ -1305,28 +1305,16 @@ module.exports = {
     if (sub === "list") {
       ensureCmdDir();
       const files = fs.readdirSync(CMD_PATH).filter(f => f.endsWith(".js"));
-      if (!files.length)
-        return message.reply(UI.info("Aucune commande locale."));
-
-      return message.reply(UI.info(
-        `Fichiers locaux (${files.length})\n` +
-        files.map(f => {
-          const kb = (fs.statSync(path.join(CMD_PATH, f)).size / 1024).toFixed(1);
-          return `📄 ${f} (${kb} KB)`;
-        }).join("\n")
-      ));
+      if (!files.length) return message.reply(UI.info("Aucune commande locale."));
+      return message.reply(UI.info(`Fichiers locaux (${files.length})\n` + files.map(f => `📄 ${f} (${(fs.statSync(path.join(CMD_PATH, f)).size / 1024).toFixed(1)} KB)`).join("\n")));
     }
 
     if (sub === "remote") {
       await message.reply(UI.loading("Récupération GitHub..."));
       try {
         const files = await getRemoteFiles();
-        if (!files.length)
-          return message.reply(UI.info("GitHub vide."));
-        return message.reply(UI.info(
-          `Fichiers GitHub (${files.length})\n` +
-          files.map(f => `📄 ${f.name} (${(f.size / 1024).toFixed(1)} KB)`).join("\n")
-        ));
+        if (!files.length) return message.reply(UI.info("GitHub vide."));
+        return message.reply(UI.info(`Fichiers GitHub (${files.length})\n` + files.map(f => `📄 ${f.name} (${(f.size / 1024).toFixed(1)} KB)`).join("\n")));
       } catch (err) {
         return message.reply(UI.error(`GitHub inaccessible : ${err.message}`));
       }
@@ -1335,16 +1323,13 @@ module.exports = {
     if (sub === "rename") {
       const oldName = normalizeName(args[1] || "");
       const newName = normalizeName(args[2] || "");
-      if (!args[1] || !args[2])
-        return message.reply(UI.error(`Usage : ${p}commit rename <ancien> <nouveau>`));
+      if (!args[1] || !args[2]) return message.reply(UI.error(`Usage : ${p}commit rename <ancien> <nouveau>`));
 
       const oldPath = path.join(CMD_PATH, oldName);
       const newPath = path.join(CMD_PATH, newName);
 
-      if (!fs.existsSync(oldPath))
-        return message.reply(UI.error(`"${oldName}" introuvable.`));
-      if (fs.existsSync(newPath))
-        return message.reply(UI.warn(`"${newName}" existe déjà.`));
+      if (!fs.existsSync(oldPath)) return message.reply(UI.error(`"${oldName}" introuvable.`));
+      if (fs.existsSync(newPath))  return message.reply(UI.warn(`"${newName}" existe déjà.`));
 
       saveBackup(oldName, fs.readFileSync(oldPath, "utf8"));
       fs.renameSync(oldPath, newPath);
@@ -1357,15 +1342,14 @@ module.exports = {
         ensureCmdDir();
         const local  = new Set(fs.readdirSync(CMD_PATH).filter(f => f.endsWith(".js")));
         const remote = new Set((await getRemoteFiles()).map(f => f.name));
-
-        const onlyLocal  = [...local].filter(f => !remote.has(f));
-        const onlyRemote = [...remote].filter(f => !local.has(f));
-        const both       = [...local].filter(f => remote.has(f));
+        const onlyL  = [...local].filter(f => !remote.has(f));
+        const onlyR  = [...remote].filter(f => !local.has(f));
+        const both   = [...local].filter(f => remote.has(f));
 
         let msg = `📊 Local: ${local.size} | GitHub: ${remote.size}`;
-        if (both.length)       msg += `\n✅ Commun: ${both.length}`;
-        if (onlyLocal.length)  msg += `\n💾 Local seul: ${onlyLocal.length}`;
-        if (onlyRemote.length) msg += `\n☁ GitHub seul: ${onlyRemote.length}`;
+        if (both.length)  msg += `\n✅ Commun: ${both.length}`;
+        if (onlyL.length) msg += `\n💾 Local seul: ${onlyL.length}`;
+        if (onlyR.length) msg += `\n☁ GitHub seul: ${onlyR.length}`;
         return message.reply(UI.info(msg));
       } catch (err) {
         return message.reply(UI.error(`Diff échoué : ${err.message}`));
@@ -1374,8 +1358,7 @@ module.exports = {
 
     if (sub === "delete") {
       const fileName = normalizeName(args[1] || "");
-      if (!args[1])
-        return message.reply(UI.error(`Usage : ${p}commit delete <nom.js>`));
+      if (!args[1]) return message.reply(UI.error(`Usage : ${p}commit delete <nom.js>`));
 
       await message.reply(UI.loading(`Suppression de "${fileName}"...`));
 
@@ -1383,7 +1366,7 @@ module.exports = {
         const content = await getFileContent(fileName).catch(() => null);
         if (content) saveBackup(fileName, content);
         await deleteFileOnGithub(fileName);
-        return message.reply(UI.success(`${fileName} supprimé.`));
+        return message.reply(UI.success(`${fileName} supprimé ✅`));
       } catch (err) {
         return message.reply(UI.error(`Suppression échouée : ${err.message}`));
       }
@@ -1392,14 +1375,11 @@ module.exports = {
     if (sub === "info") {
       await message.reply(UI.loading("Récupération infos..."));
       try {
-        const url = `https://api.github.com/repos/${GITHUB_CONFIG.username}/${GITHUB_CONFIG.repo}`;
-        const res = await axios.get(url, { headers: githubHeaders() });
+        const res = await axios.get(`https://api.github.com/repos/${GITHUB_CONFIG.username}/${GITHUB_CONFIG.repo}`, { headers: githubHeaders() });
         const r   = res.data;
-
         ensureCmdDir();
-        const localCount = fs.readdirSync(CMD_PATH).filter(f => f.endsWith(".js")).length;
-        const backups    = loadBackups();
-        const backupCount = Object.values(backups).reduce((sum, b) => sum + b.length, 0);
+        const localCount  = fs.readdirSync(CMD_PATH).filter(f => f.endsWith(".js")).length;
+        const backupCount = Object.values(loadBackups()).reduce((sum, b) => sum + b.length, 0);
 
         return message.reply(UI.info(
           `👤 ${r.owner.login}\n📦 ${r.name}\n🌿 ${GITHUB_CONFIG.branch}\n⭐ ${r.stargazers_count} | 🍴 ${r.forks_count}\n🔒 ${r.private ? "Oui" : "Non"}\n📁 Local: ${localCount} fichiers\n💾 Backups: ${backupCount}\n🔗 ${r.html_url}`
