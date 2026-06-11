@@ -43,7 +43,9 @@ function getUptrend(seconds) {
 }
 
 function buildTextCard(data) {
- const { bot, serv, usedMem, totalMem, cpuLoad, cpuSpeed, status, currentTime, prefix, nodeVersion, platform, arch, cpuCores, networkInterfaces } = data;
+ const { usedMem, totalMem, cpuLoad, cpuSpeed, status, currentTime, prefix, nodeVersion, platform, arch, cpuCores, networkInterfaces } = data;
+ const bot = data.bot;
+ const serv = data.serv;
 
  const ramPct = (usedMem / totalMem * 100).toFixed(1);
  const ramIcon = usedMem / totalMem > 0.85 ? "🔴" : usedMem / totalMem > 0.6 ? "🟡" : "🟢";
@@ -112,7 +114,9 @@ function drawGlowBar(ctx, x, y, w, h, pct, colorStart, colorEnd) {
 }
 
 async function generateCard(data) {
- const { bot, serv, usedMem, totalMem, cpuLoad, cpuSpeed, status, currentTime, prefix, nodeVersion, platform, arch, cpuCores } = data;
+ const { usedMem, totalMem, cpuLoad, cpuSpeed, status, currentTime, prefix, nodeVersion, platform, arch, cpuCores } = data;
+ const bot = data.bot;
+ const serv = data.serv;
 
  const W = 700, H = 580;
  const canvas = createCanvas(W, H);
@@ -204,9 +208,6 @@ async function generateCard(data) {
  ctx.fillText(value, cx + 8, cy + 34);
  };
 
- const bot = data.bot;
- const serv = data.serv;
-
  sectionTitle("⏱️ BOT UPTIME", "#818cf8", 88);
  ctx.font = "bold 13px 'Courier New'";
  ctx.fillStyle = "#c4b5fd";
@@ -246,10 +247,10 @@ async function generateCard(data) {
 
  sectionTitle("🔢 MÉTRIQUES AVANCÉES", "#f472b6", 462);
 
- const memTotal = (os.totalmem() / (1024 ** 3)).toFixed(2);
  const heapUsed = (process.memoryUsage().heapUsed / (1024 ** 2)).toFixed(1);
  const heapTotal = (process.memoryUsage().heapTotal / (1024 ** 2)).toFixed(1);
  const rss = (process.memoryUsage().rss / (1024 ** 2)).toFixed(1);
+ const memTotal = (os.totalmem() / (1024 ** 3)).toFixed(2);
 
  const advanced = [
  { label: "HEAP USED", value: `${heapUsed} MB`, color: "#f472b6" },
