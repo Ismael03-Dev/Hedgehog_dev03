@@ -1,207 +1,239 @@
-const fs = require("fs-extra");
-const axios = require("axios");
-const path = require("path");
 const { getPrefix } = global.utils;
 const { commands, aliases } = global.GoatBot;
+
+const CATEGORY_ICONS = {
+ info: "ℹ️",
+ admin: "⚙️",
+ owner: "👑",
+ system: "🖥️",
+ fun: "🎉",
+ utility: "🔧",
+ media: "🎬",
+ music: "🎵",
+ game: "🎮",
+ social: "💬",
+ economy: "💰",
+ education: "📚",
+ moderation: "🛡️",
+ ai: "🤖",
+ image: "🖼️",
+ uncategorized: "📦"
+};
+
+const ROLE_NAMES = {
+ 0: { label: "Tout le monde", icon: "👥" },
+ 1: { label: "Admin groupe", icon: "🔑" },
+ 2: { label: "Admin bot", icon: "👑" }
+};
+
+const PRIORITY_CATEGORIES = ["info", "system", "admin", "owner"];
+
+function getCategoryIcon(cat) {
+ return CATEGORY_ICONS[cat.toLowerCase()] || "📦";
+}
+
+function getRoleInfo(role) {
+ return ROLE_NAMES[role] || { label: "Inconnu", icon: "❓" };
+}
+
+function formatGuide(guide, prefix, name) {
+ return (guide || "Pas d'exemple fourni.")
+ .replace(/{p}/g, prefix)
+ .replace(/{pn}/g, prefix + name)
+ .replace(/{n}/g, name);
+}
+
+function buildHeader(prefix, total, categories) {
+ const catCount = Object.keys(categories).length;
+ return (
+ `╭─────────────────────•\n` +
+ `│ 🦔 HEDGEHOG BOT — AIDE\n` +
+ `├─────────────────────•\n` +
+ `│ 🔹 Prefix : ${prefix}\n` +
+ `│ 🔸 Commandes : ${total}\n` +
+ `│ 📂 Catégories: ${catCount}\n` +
+ `╰─────────────────────•\n`
+ );
+}
+
+function buildCategoryBlock(cat, cmdList, prefix) {
+ const icon = getCategoryIcon(cat);
+ const title = cat.toUpperCase();
+ let block = `\n╭──【 ${icon} ${title} 】\n`;
+
+ const perLine = 2;
+ for (let i = 0; i < cmdList.length; i += perLine) {
+ const chunk = cmdList.slice(i, i + perLine);
+ block += `│ ${chunk.map(c => `⤷ ${c}`).join(" ")}\n`;
+ }
+
+ block += `╰${"─".repeat(20)}\n`;
+ return block;
+}
+
+function buildCommandDetail(cmd, prefix) {
+ const cfg = cmd.config;
+ const roleInfo = getRoleInfo(cfg.role || 0);
+ const guide = formatGuide(cfg.guide?.en, prefix, cfg.name);
+ const aliasText = cfg.aliases?.length ? cfg.aliases.join(", ") : "Aucun";
+ const desc = cfg.longDescription?.en || cfg.shortDescription?.en || "Aucune description.";
+ const version = cfg.version || "1.0";
+ const cooldown = cfg.countDown || 1;
+ const author = cfg.author || "Inconnu";
+
+ const events = [];
+ if (typeof cmd.onStart === "function") events.push("onStart");
+ if (typeof cmd.onChat === "function") events.push("onChat");
+ if (typeof cmd.onReply === "function") events.push("onReply");
+
+ return (
+ `╭─────────────────────•\n` +
+ `│ 📖 ${cfg.name.toUpperCase()} v${version}\n` +
+ `├─────────────────────•\n` +
+ `│ 📝 ${desc}\n` +
+ `├─────────────────────•\n` +
+ `│ 👤 Auteur : ${author}\n` +
+ `│ ${roleInfo.icon} Rôle : ${roleInfo.label} (${cfg.role || 0})\n` +
+ `│ ⏱️ Cooldown : ${cooldown}s\n` +
+ `│ 🏷️ Alias : ${aliasText}\n` +
+ `│ 📂 Catégorie : ${getCategoryIcon(cfg.category || "uncategorized")} ${cfg.category || "Uncategorized"}\n` +
+ `│ ⚡ Événements : ${events.join(", ") || "onStart"}\n` +
+ `├─────────────────────•\n` +
+ `│ 🔧 Usage :\n` +
+ `│ ${guide}\n` +
+ `╰─────────────────────•`
+ );
+}
+
+function buildFooter(prefix) {
+ return (
+ `\n╭─────────────────────•\n` +
+ `│ 💡 ${prefix}help <commande>\n` +
+ `│ pour plus de détails\n` +
+ `╰─────────────────────•`
+ );
+}
+
+function buildSearchResults(results, prefix) {
+ if (!results.length)
+ return null;
+
+ let msg = `╭─────────────────────•\n│ 🔍 RÉSULTATS\n├─────────────────────•\n`;
+ for (const name of results) {
+ const cmd = commands.get(name);
+ const icon = getCategoryIcon(cmd?.config?.category || "");
+ msg += `│ ${icon} ${name}\n`;
+ }
+ msg += `╰─────────────────────•`;
+ return msg;
+}
 
 module.exports = {
  config: {
  name: "help",
  version: "2.0",
- author: "ʚʆɞ Ismael Sømå ʚʆɞ",
- countDown: 3,
+ author: "Ismael03-Dev",
+ countDown: 5,
  role: 0,
  shortDescription: { en: "Liste des commandes et aide" },
  longDescription: { en: "Affiche toutes les commandes ou les détails d'une commande spécifique." },
  category: "info",
- guide: { en: "{pn} [nom de la commande]" },
- priority: 1,
+ guide: { en: "{pn} [commande | catégorie | search <mot>]" },
+ priority: 0
  },
 
- onStart: async function ({ message, args, event, threadsData, role }) {
+ onStart: async function ({ message, args, event, role }) {
  const threadID = event.threadID;
- const threadData = await threadsData.get(threadID);
  const prefix = getPrefix(threadID);
- const botName = global.GoatBot.config?.botName || "Bot";
-
- const isAdmin = role >= 1;
- const isBotAdmin = role >= 2;
 
  if (args.length === 0) {
  const categories = {};
+ let visibleCount = 0;
 
  for (const [name, cmd] of commands) {
- if (cmd.config.role > 1 && !isBotAdmin) continue;
- if (cmd.config.role === 1 && !isAdmin) continue;
- const category = cmd.config.category || "Uncategorized";
- if (!categories[category]) categories[category] = [];
- categories[category].push(name);
+ if ((cmd.config.role || 0) > (role || 0)) continue;
+ const cat = (cmd.config.category || "uncategorized").toLowerCase();
+ if (!categories[cat]) categories[cat] = [];
+ categories[cat].push(name);
+ visibleCount++;
  }
 
+ for (const cat in categories) categories[cat].sort();
+
  const sortedCategories = Object.keys(categories).sort((a, b) => {
- const order = ["info", "admin", "tools", "fun", "media", "uncategorized"];
- const ia = order.indexOf(a.toLowerCase());
- const ib = order.indexOf(b.toLowerCase());
+ const ia = PRIORITY_CATEGORIES.indexOf(a);
+ const ib = PRIORITY_CATEGORIES.indexOf(b);
  if (ia !== -1 && ib !== -1) return ia - ib;
  if (ia !== -1) return -1;
  if (ib !== -1) return 1;
  return a.localeCompare(b);
  });
 
- const totalCmds = Object.values(categories).reduce((sum, arr) => sum + arr.length, 0);
-
- let msg = `╭─────────────────────•\n`;
- msg += `│ 🦔 ${botName.toUpperCase()}\n`;
- msg += `├─────────────────────•\n`;
- msg += `│ 📌 Préfixe : ${prefix}\n`;
- msg += `│ 📂 Commandes : ${totalCmds}\n`;
- msg += `│ 👤 Rôle : ${roleTextToString(role)}\n`;
- msg += `│ ⏱️ Uptime : ${formatUptime(process.uptime())}\n`;
- msg += `╰─────────────────────•\n\n`;
+ let msg = buildHeader(prefix, visibleCount, categories);
 
  for (const cat of sortedCategories) {
- const cmdList = categories[cat].sort();
- const emoji = getCategoryEmoji(cat);
- msg += `╭─${emoji} ${cat.toUpperCase()} (${cmdList.length})\n`;
-
- const perLine = 3;
- for (let i = 0; i < cmdList.length; i += perLine) {
- const chunk = cmdList.slice(i, i + perLine);
- const line = chunk.map(c => `⤷ ${c}`).join(" ");
- msg += `│ ${line}\n`;
- }
- msg += `╰─────────────\n`;
+ msg += buildCategoryBlock(cat, categories[cat], prefix);
  }
 
- msg += `\n💡 ${prefix}help <commande> pour détails\n`;
- msg += `━━━━━━━━━━━━━━━━━`;
+ msg += buildFooter(prefix);
+ return message.reply(msg);
+ }
 
+ if (args[0].toLowerCase() === "search" || args[0].toLowerCase() === "s") {
+ const keyword = args.slice(1).join(" ").toLowerCase();
+ if (!keyword)
+ return message.reply(`╭─────────────────────•\n│ ⚠️ Fournis un mot-clé\n│ Usage : ${prefix}help search <mot>\n╰─────────────────────•`);
+
+ const results = [];
+ for (const [name, cmd] of commands) {
+ const cfg = cmd.config;
+ const inName = name.includes(keyword);
+ const inDesc = (cfg.shortDescription?.en || "").toLowerCase().includes(keyword);
+ const inCat = (cfg.category || "").toLowerCase().includes(keyword);
+ const inAlias = (cfg.aliases || []).some(a => a.includes(keyword));
+ if (inName || inDesc || inCat || inAlias) results.push(name);
+ }
+
+ const resultMsg = buildSearchResults(results, prefix);
+ if (!resultMsg)
+ return message.reply(`╭─────────────────────•\n│ ❌ Aucun résultat pour "${keyword}"\n╰─────────────────────•`);
+
+ return message.reply(resultMsg);
+ }
+
+ const catInput = args[0].toLowerCase();
+ const catCommands = [];
+ for (const [name, cmd] of commands) {
+ if ((cmd.config.category || "").toLowerCase() === catInput)
+ catCommands.push(name);
+ }
+
+ if (catCommands.length > 0) {
+ catCommands.sort();
+ const icon = getCategoryIcon(catInput);
+ let msg = `╭─────────────────────•\n│ ${icon} CATÉGORIE : ${catInput.toUpperCase()}\n│ ${catCommands.length} commande(s)\n├─────────────────────•\n`;
+ for (const name of catCommands) {
+ const cmd = commands.get(name);
+ const desc = cmd?.config?.shortDescription?.en || "";
+ msg += `│ ⤷ ${name}${desc ? ` — ${desc}` : ""}\n`;
+ }
+ msg += `╰─────────────────────•`;
  return message.reply(msg);
  }
 
  const input = args[0].toLowerCase();
  const cmd = commands.get(input) || commands.get(aliases.get(input));
 
- if (!cmd) {
- const suggestions = findSuggestions(input, commands, aliases);
- let reply = `❌ \`${input}\` introuvable.`;
- if (suggestions.length > 0) {
- reply += `\n\n💡 Suggestions :\n${suggestions.map(s => ` ⤷ ${s}`).join("\n")}`;
+ if (!cmd)
+ return message.reply(
+ `╭─────────────────────•\n` +
+ `│ ❌ "${input}" introuvable\n` +
+ `├─────────────────────•\n` +
+ `│ 💡 ${prefix}help → liste complète\n` +
+ `│ 💡 ${prefix}help search <mot>\n` +
+ `╰─────────────────────•`
+ );
+
+ return message.reply(buildCommandDetail(cmd, prefix));
  }
- reply += `\n\nTapez \`${prefix}help\` pour la liste.`;
- return message.reply(reply);
- }
-
- const cfg = cmd.config;
- const roleLevel = cfg.role || 0;
- const roleName = roleLevel === 0 ? "👥 Tout le monde" : roleLevel === 1 ? "🛡️ Admin groupe" : "👑 Admin bot";
- const cooldown = cfg.countDown || 1;
-
- let response = `╭─────────────────────•\n`;
- response += `│ 📖 ${cfg.name.toUpperCase()}\n`;
- response += `├─────────────────────•\n`;
- response += `│ 📝 ${cfg.longDescription?.en || cfg.shortDescription?.en || "Aucune description"}\n`;
- response += `│ ✍️ Auteur : ${cfg.author || "Inconnu"}\n`;
- response += `│ 🎚️ Rôle : ${roleName}\n`;
- response += `│ ⏱️ Cooldown : ${cooldown}s\n`;
- response += `│ 📁 Catégorie : ${cfg.category || "N/A"}\n`;
- response += `│ 🔢 Version : ${cfg.version || "1.0"}\n`;
-
- if (cfg.aliases?.length) {
- response += `│ 🏷️ Alias : ${cfg.aliases.join(", ")}\n`;
- }
-
- if (cfg.dependencies?.length) {
- response += `│ 📦 Dépendances : ${cfg.dependencies.join(", ")}\n`;
- }
-
- response += `╰─────────────────────•\n`;
- response += `\n🔧 Utilisation :\n`;
- const guide = cfg.guide?.en || "Pas d'exemple fourni.";
- const usage = guide
- .replace(/{p}/g, prefix)
- .replace(/{pn}/g, prefix + cfg.name)
- .replace(/{n}/g, cfg.name);
- response += `\`${usage}\``;
-
- if (cfg.longDescription?.en && cfg.longDescription.en.length > 100) {
- response += `\n\n📋 Détails supplémentaires disponibles.`;
- }
-
- return message.reply(response);
- },
 };
-
-function roleTextToString(role) {
- switch (role) {
- case 0: return "👥 Membre";
- case 1: return "🛡️ Admin";
- case 2: return "👑 Owner";
- default: return "❓ Inconnu";
- }
-}
-
-function formatUptime(seconds) {
- const d = Math.floor(seconds / 86400);
- const h = Math.floor((seconds % 86400) / 3600);
- const m = Math.floor((seconds % 3600) / 60);
- const s = Math.floor(seconds % 60);
- const parts = [];
- if (d > 0) parts.push(`${d}j`);
- if (h > 0) parts.push(`${h}h`);
- if (m > 0) parts.push(`${m}m`);
- parts.push(`${s}s`);
- return parts.join(" ");
-}
-
-function getCategoryEmoji(category) {
- const emojis = {
- info: "📖",
- admin: "🛡️",
- tools: "🔧",
- fun: "🎮",
- media: "🎬",
- economy: "💰",
- game: "🎲",
- utility: "🛠️",
- nsfw: "🔞",
- ai: "🤖",
- social: "👥",
- uncategorized: "📁"
- };
- return emojis[category.toLowerCase()] || "📄";
-}
-
-function findSuggestions(input, commands, aliases) {
- const allNames = [...commands.keys(), ...aliases.keys()];
- const suggestions = new Set();
-
- allNames.forEach(name => {
- if (name.startsWith(input) || name.includes(input)) {
- suggestions.add(name);
- }
- });
-
- const levenshtein = (a, b) => {
- const matrix = [];
- for (let i = 0; i <= b.length; i++) matrix[i] = [i];
- for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
- for (let i = 1; i <= b.length; i++) {
- for (let j = 1; j <= a.length; j++) {
- if (b[i - 1] === a[j - 1]) matrix[i][j] = matrix[i - 1][j - 1];
- else matrix[i][j] = Math.min(matrix[i - 1][j - 1] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j] + 1);
- }
- }
- return matrix[b.length][a.length];
- };
-
- if (suggestions.size < 3) {
- allNames.forEach(name => {
- if (levenshtein(input, name) <= 2 && !suggestions.has(name)) {
- suggestions.add(name);
- }
- });
- }
-
- return [...suggestions].slice(0, 3);
-}
