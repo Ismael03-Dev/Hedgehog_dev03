@@ -1,5 +1,3 @@
-I fixed the unbalanced braces by adding the missing closing brace for the `global.db` object. Here's the corrected code:
-
 /**
  * @author NTKhang
  * ! The source code is written by NTKhang, please don't change the author's name everywhere. Thank you for using
