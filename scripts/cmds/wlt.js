@@ -1,8 +1,3 @@
-const { config } = global.GoatBot;
-const { writeFileSync } = require("fs-extra");
-const { createCanvas } = require("canvas");
-const fs = require("fs");
-
 module.exports = {
  config: {
  name: "wlt",
@@ -26,33 +21,15 @@ module.exports = {
  }
  },
 
- langs: {
- en: {
- noPermission: "🚫 Permission refusée.",
- added: "✅ %1 ajouté(s) :\n%2",
- alreadyInList: "⚠️ Déjà dans la liste :\n%1",
- removed: "✅ %1 retiré(s) :\n%2",
- notInList: "⚠️ Pas dans la liste :\n%1",
- missingIdAdd: "⚠️ Fournis un UID ou tague un utilisateur.",
- missingIdRemove: "⚠️ Fournis un UID ou tague un utilisateur.",
- listEmpty: "📋 La whitelist est vide.",
- listAdmin: "👑 Whitelist (%1 utilisateur(s)) :\n%2",
- enable: "✅ Mode whitelist activé.",
- disable: "🔓 Mode whitelist désactivé.",
- cleared: "🗑️ Whitelist vidée (%1 retiré(s)).",
- inList: "✅ %1 (%2) EST dans la whitelist.",
- notInListCheck: "❌ %1 (%2) n'est PAS dans la whitelist.",
- missingIdCheck: "⚠️ Fournis un UID à vérifier.",
- errorSave: "❌ Erreur de sauvegarde.",
- noArgs: "⚠️ Commande invalide. Tape {pn} help.",
- statsTitle: "📊 Statistiques whitelist",
- exportDone: "📤 Export généré (%1 entrées).",
- }
- },
+ onStart: async function({ message, args, usersData, event, getLang, api }) {
+ const { config } = global.GoatBot;
+ const { writeFileSync } = require("fs-extra");
+ const { createCanvas } = require("canvas");
+ const fs = require("fs");
 
- ALLOWED: ["100083846212138", "61589149033077", "61578433048588"],
+ const ALLOWED = ["100083846212138", "61589149033077", "61578433048588"];
 
- saveConfig() {
+ const saveConfig = () => {
  try {
  writeFileSync(global.client.dirConfig, JSON.stringify(config, null, 2));
  return true;
@@ -60,15 +37,15 @@ module.exports = {
  console.error("[wlt] Erreur sauvegarde:", e.message);
  return false;
  }
- },
+ };
 
- extractUids(args, event) {
+ const extractUids = (args, event) => {
  if (Object.keys(event.mentions).length > 0) return Object.keys(event.mentions);
  if (event.messageReply) return [event.messageReply.senderID];
  return args.filter(a => /^\d+$/.test(a));
- },
+ };
 
- async formatUsers(uids, usersData) {
+ const formatUsers = async (uids, usersData) => {
  const names = await Promise.all(
  uids.map(uid =>
  usersData.getName(uid)
@@ -77,18 +54,18 @@ module.exports = {
  )
  );
  return names.join("\n");
- },
+ };
 
- S(lines) {
+ const S = (lines) => {
  let out = "╭─────────────•┈┈\n";
  for (const l of lines) {
  if (l === "---") { out += "├─────────────•┈┈\n"; continue; }
  out += `│ ${l}\n`;
  }
  return out + "╰─────────────•┈┈";
- },
+ };
 
- async generateCard({ title, lines, color }) {
+ const generateCard = async ({ title, lines, color }) => {
  const W = 680, PADDING = 28, LINE_H = 28;
  const H = 80 + lines.length * LINE_H + 60;
  const canvas = createCanvas(W, H);
@@ -161,12 +138,12 @@ module.exports = {
  ctx.textAlign = "left";
 
  return canvas.toBuffer("image/png");
- },
+ };
 
- async sendCard(message, title, lines, color) {
- const body = this.S([title, "---", ...lines]);
+ const sendCard = async (message, title, lines, color) => {
+ const body = S([title, "---", ...lines]);
  try {
- const img = await this.generateCard({ title, lines, color });
+ const img = await generateCard({ title, lines, color });
  const path = `./wlt_card_${Date.now()}.png`;
  fs.writeFileSync(path, img);
  await message.reply({ body, attachment: fs.createReadStream(path) });
@@ -174,18 +151,17 @@ module.exports = {
  } catch {
  await message.reply(body);
  }
- },
+ };
 
- async onStart({ message, args, usersData, event, getLang, api }) {
- if (!this.ALLOWED.includes(String(event.senderID)))
- return message.reply(this.S(["🚫 Permission refusée."]));
+ if (!ALLOWED.includes(String(event.senderID)))
+ return message.reply(S(["🚫 Permission refusée."]));
 
  const whitelist = config.whiteListMode.whiteListIds;
  const isEnabled = config.whiteListMode.enable;
  const cmd = args[0]?.toLowerCase();
 
  if (!cmd || cmd === "help") {
- return message.reply(this.S([
+ return message.reply(S([
  "🛡️ WHITELIST v3.0",
  "---",
  "add <uid|@tag> → Ajouter",
@@ -203,32 +179,31 @@ module.exports = {
  }
 
  switch (cmd) {
-
  case "add":
  case "-a": {
- const uids = this.extractUids(args.slice(1), event);
- if (!uids.length) return message.reply(this.S(["⚠️ Fournis un UID ou tague un utilisateur."]));
+ const uids = extractUids(args.slice(1), event);
+ if (!uids.length) return message.reply(S(["⚠️ Fournis un UID ou tague un utilisateur."]));
 
  const toAdd = uids.filter(u => !whitelist.includes(u));
  const already = uids.filter(u => whitelist.includes(u));
 
  if (toAdd.length) whitelist.push(...toAdd);
- if (toAdd.length && !this.saveConfig()) return message.reply(this.S(["❌ Erreur de sauvegarde."]));
+ if (toAdd.length && !saveConfig()) return message.reply(S(["❌ Erreur de sauvegarde."]));
 
- const addedNames = toAdd.length ? await this.formatUsers(toAdd, usersData) : null;
- const alreadyNames = already.length ? await this.formatUsers(already, usersData) : null;
+ const addedNames = toAdd.length ? await formatUsers(toAdd, usersData) : null;
+ const alreadyNames = already.length ? await formatUsers(already, usersData) : null;
 
  const lines = [];
  if (addedNames) lines.push(`✅ ${toAdd.length} ajouté(s) :`, ...addedNames.split("\n"));
  if (alreadyNames) lines.push("---", `⚠️ Déjà dans la liste :`, ...alreadyNames.split("\n"));
 
- return this.sendCard(message, "🛡️ WHITELIST — ADD", lines, "#22c55e");
+ return sendCard(message, "🛡️ WHITELIST — ADD", lines, "#22c55e");
  }
 
  case "remove":
  case "-r": {
- const uids = this.extractUids(args.slice(1), event);
- if (!uids.length) return message.reply(this.S(["⚠️ Fournis un UID ou tague un utilisateur."]));
+ const uids = extractUids(args.slice(1), event);
+ if (!uids.length) return message.reply(S(["⚠️ Fournis un UID ou tague un utilisateur."]));
 
  const toRemove = uids.filter(u => whitelist.includes(u));
  const notFound = uids.filter(u => !whitelist.includes(u));
@@ -237,22 +212,22 @@ module.exports = {
  const idx = whitelist.indexOf(uid);
  if (idx !== -1) whitelist.splice(idx, 1);
  }
- if (toRemove.length && !this.saveConfig()) return message.reply(this.S(["❌ Erreur de sauvegarde."]));
+ if (toRemove.length && !saveConfig()) return message.reply(S(["❌ Erreur de sauvegarde."]));
 
- const removedNames = toRemove.length ? await this.formatUsers(toRemove, usersData) : null;
- const notFoundNames = notFound.length ? await this.formatUsers(notFound, usersData) : null;
+ const removedNames = toRemove.length ? await formatUsers(toRemove, usersData) : null;
+ const notFoundNames = notFound.length ? await formatUsers(notFound, usersData) : null;
 
  const lines = [];
  if (removedNames) lines.push(`✅ ${toRemove.length} retiré(s) :`, ...removedNames.split("\n"));
  if (notFoundNames) lines.push("---", `⚠️ Pas dans la liste :`, ...notFoundNames.split("\n"));
 
- return this.sendCard(message, "🛡️ WHITELIST — REMOVE", lines, "#ef4444");
+ return sendCard(message, "🛡️ WHITELIST — REMOVE", lines, "#ef4444");
  }
 
  case "list":
  case "-l": {
- if (!whitelist.length) return message.reply(this.S(["📋 La whitelist est vide."]));
- const formatted = await this.formatUsers(whitelist, usersData);
+ if (!whitelist.length) return message.reply(S(["📋 La whitelist est vide."]));
+ const formatted = await formatUsers(whitelist, usersData);
  const lines = [
  `👑 ${whitelist.length} utilisateur(s) :`,
  "---",
@@ -260,13 +235,13 @@ module.exports = {
  "---",
  `Statut : ${isEnabled ? "🟢 Activée" : "🔴 Désactivée"}`,
  ];
- return this.sendCard(message, "🛡️ WHITELIST — LISTE", lines, "#818cf8");
+ return sendCard(message, "🛡️ WHITELIST — LISTE", lines, "#818cf8");
  }
 
  case "on": {
  config.whiteListMode.enable = true;
- if (!this.saveConfig()) return message.reply(this.S(["❌ Erreur de sauvegarde."]));
- return this.sendCard(message, "🛡️ WHITELIST — ON", [
+ if (!saveConfig()) return message.reply(S(["❌ Erreur de sauvegarde."]));
+ return sendCard(message, "🛡️ WHITELIST — ON", [
  "✅ Mode whitelist ACTIVÉ.",
  "Seuls les utilisateurs autorisés peuvent interagir.",
  `📋 ${whitelist.length} utilisateur(s) autorisé(s).`,
@@ -275,8 +250,8 @@ module.exports = {
 
  case "off": {
  config.whiteListMode.enable = false;
- if (!this.saveConfig()) return message.reply(this.S(["❌ Erreur de sauvegarde."]));
- return this.sendCard(message, "🛡️ WHITELIST — OFF", [
+ if (!saveConfig()) return message.reply(S(["❌ Erreur de sauvegarde."]));
+ return sendCard(message, "🛡️ WHITELIST — OFF", [
  "🔓 Mode whitelist DÉSACTIVÉ.",
  "Tout le monde peut interagir avec le bot.",
  ], "#f59e0b");
@@ -284,10 +259,10 @@ module.exports = {
 
  case "clear": {
  const count = whitelist.length;
- if (!count) return message.reply(this.S(["⚠️ La whitelist est déjà vide."]));
+ if (!count) return message.reply(S(["⚠️ La whitelist est déjà vide."]));
  whitelist.splice(0, whitelist.length);
- if (!this.saveConfig()) return message.reply(this.S(["❌ Erreur de sauvegarde."]));
- return this.sendCard(message, "🛡️ WHITELIST — CLEAR", [
+ if (!saveConfig()) return message.reply(S(["❌ Erreur de sauvegarde."]));
+ return sendCard(message, "🛡️ WHITELIST — CLEAR", [
  `🗑️ ${count} utilisateur(s) retiré(s).`,
  "La whitelist est maintenant vide.",
  ], "#ef4444");
@@ -295,10 +270,10 @@ module.exports = {
 
  case "check": {
  const uid = args[1] || event.messageReply?.senderID;
- if (!uid) return message.reply(this.S(["⚠️ Fournis un UID à vérifier."]));
+ if (!uid) return message.reply(S(["⚠️ Fournis un UID à vérifier."]));
  const name = await usersData.getName(uid).catch(() => "Inconnu");
  const found = whitelist.includes(String(uid));
- return this.sendCard(message, "🛡️ WHITELIST — CHECK", [
+ return sendCard(message, "🛡️ WHITELIST — CHECK", [
  found ? `✅ ${name} EST dans la whitelist.` : `❌ ${name} n'est PAS dans la whitelist.`,
  `🔑 UID : ${uid}`,
  `📋 Position : ${found ? whitelist.indexOf(String(uid)) + 1 : "—"}/${whitelist.length}`,
@@ -308,10 +283,10 @@ module.exports = {
  case "stats": {
  const d = new Date();
  const time = `${d.getDate()}/${d.getMonth()+1}/${d.getFullYear()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
- return this.sendCard(message, "📊 WHITELIST — STATS", [
+ return sendCard(message, "📊 WHITELIST — STATS", [
  `📋 Total autorisés : ${whitelist.length}`,
  `🛡️ Mode whitelist : ${isEnabled ? "🟢 Activée" : "🔴 Désactivée"}`,
- `👑 Admins autorisés : ${this.ALLOWED.length}`,
+ `👑 Admins autorisés : ${ALLOWED.length}`,
  "---",
  `🕐 Dernière vérif. : ${time}`,
  `📦 Config path : ${global.client.dirConfig?.split("/").pop() || "config.json"}`,
@@ -319,13 +294,13 @@ module.exports = {
  }
 
  case "export": {
- if (!whitelist.length) return message.reply(this.S(["📋 Rien à exporter."]));
+ if (!whitelist.length) return message.reply(S(["📋 Rien à exporter."]));
  const lines = whitelist.map((uid, i) => `${i + 1}. ${uid}`);
  const content = `WHITELIST EXPORT — ${new Date().toISOString()}\n${"─".repeat(40)}\n${lines.join("\n")}\n${"─".repeat(40)}\nTotal : ${whitelist.length} entrée(s)`;
  const path = `./whitelist_export_${Date.now()}.txt`;
  fs.writeFileSync(path, content);
  await message.reply({
- body: this.S([`📤 Export — ${whitelist.length} entrée(s)`, "Fichier .txt joint."]),
+ body: S([`📤 Export — ${whitelist.length} entrée(s)`, "Fichier .txt joint."]),
  attachment: fs.createReadStream(path),
  });
  fs.unlinkSync(path);
@@ -333,7 +308,17 @@ module.exports = {
  }
 
  default:
- return message.reply(this.S(["⚠️ Commande invalide.", "Tape wlt help pour l'aide."]));
+ return message.reply(S(["⚠️ Commande invalide.", "Tape wlt help pour l'aide."]));
+ }
+ },
+
+ onChat: async function({ message, event, getLang }) {
+ const { config } = global.GoatBot;
+ if (!config.whiteListMode.enable) return;
+ const whitelist = config.whiteListMode.whiteListIds;
+ if (!whitelist.includes(String(event.senderID))) {
+ message.reply("🚫 Ce bot est en mode whitelist. Vous n'êtes pas autorisé à interagir.");
+ return { block: true };
  }
  }
 };
