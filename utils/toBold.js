@@ -57,4 +57,3 @@ function toBold(text) {
 }
 
 module.exports = { config, onStart, onChat, toBold };
-💬 React to this message to apply changes directly on GitHub.
