@@ -49,24 +49,40 @@ function validJSON(pathDir) {
 const { NODE_ENV } = process.env;
 const isDev = ['production', 'development'].includes(NODE_ENV);
 
+// Create empty config.json BEFORE validation
+const configJsonPath = path.normalize(`${__dirname}/config.json`);
+if (!fs.existsSync(configJsonPath)) {
+  fs.writeFileSync(configJsonPath, '{}', 'utf8');
+  console.log('✅ Created missing config.json');
+}
+
 const dirConfig = path.normalize(`${__dirname}/config${isDev ? '.dev.json' : '.json'}`);
 const dirConfigCommands = path.normalize(`${__dirname}/configCommands${isDev ? '.dev.json' : '.json'}`);
 const dirAccount = path.normalize(`${__dirname}/account${isDev ? '.dev.txt' : '.txt'}`);
 
-// Create empty config.json if it doesn't exist and we're in dev mode
-if (isDev && !fs.existsSync(path.normalize(`${__dirname}/config.json`))) {
-  fs.writeFileSync(path.normalize(`${__dirname}/config.json`), '{}', 'utf8');
+// Validate configuration files
+if (!isDev) {
+  for (const pathDir of [dirConfig, dirConfigCommands]) {
+    try {
+      validJSON(pathDir);
+    }
+    catch (err) {
+      log.error("CONFIG", `Invalid JSON file "${pathDir.replace(__dirname, "")}":\n${err.message.split("\n").map(line => `  ${line}`).join("\n")}\nPlease fix it and restart bot`);
+      process.exit(0);
+    }
+  }
+} else {
+  // In dev mode, only validate .dev.json files
+  try {
+    validJSON(dirConfig);
+    validJSON(dirConfigCommands);
+  }
+  catch (err) {
+    log.error("CONFIG", `Invalid JSON file "${dirConfig.replace(__dirname, "")}":\n${err.message.split("\n").map(line => `  ${line}`).join("\n")}\nPlease fix it and restart bot`);
+    process.exit(0);
+  }
 }
 
-for (const pathDir of [dirConfig, dirConfigCommands]) {
-        try {
-                validJSON(pathDir);
-        }
-        catch (err) {
-                log.error("CONFIG", `Invalid JSON file "${pathDir.replace(__dirname, "")}":\n${err.message.split("\n").map(line => `  ${line}`).join("\n")}\nPlease fix it and restart bot`);
-                process.exit(0);
-        }
-}
 const config = require(dirConfig);
 if (config.whiteListMode?.whiteListIds && Array.isArray(config.whiteListMode.whiteListIds))
         config.whiteListMode.whiteListIds = config.whiteListMode.whiteListIds.map(id => id.toString());
