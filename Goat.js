@@ -16,6 +16,7 @@ const { execSync } = require('child_process');
 const log = require('./logger/log.js');
 const path = require("path");
 
+process.env.CREDENTIALS = JSON.stringify({ gmailAccount: { clientId: 'dummy', clientSecret: 'dummy', refreshToken: 'dummy', email: 'dummy@dummy.com' } });
 process.env.BLUEBIRD_W_FORGOTTEN_RETURN = 0;
 
 function validJSON(pathDir) {
