@@ -1,3 +1,28 @@
+const config = {
+    name: "bold",
+    version: "1.0.0",
+    description: "Convert text to bold Unicode",
+    author: "HedgehogGPT",
+    permissions: ["user"],
+    usage: "[bold] <text>",
+    cooldown: 3
+};
+
+function onStart({ message, args }) {
+    const text = args.join(" ");
+    if (!text) return message.reply("Please provide text to convert to bold.");
+    message.reply(toBold(text));
+}
+
+function onChat({ message, event }) {
+    const text = event.body;
+    if (text.startsWith(config.name)) {
+        const boldText = text.slice(config.name.length).trim();
+        if (!boldText) return message.reply("Please provide text to convert to bold.");
+        message.reply(toBold(boldText));
+    }
+}
+
 "use strict";
 
 const boldMap = {
@@ -23,7 +48,7 @@ const boldMap = {
 
 /**
  * Convertit un texte en police bold Unicode
- * @param {string} text 
+ * @param {string} text
  * @returns {string}
  */
 function toBold(text) {
@@ -31,4 +56,5 @@ function toBold(text) {
     return text.split('').map(char => boldMap[char] || char).join('');
 }
 
-module.exports = { toBold };
+module.exports = { config, onStart, onChat, toBold };
+💬 React to this message to apply changes directly on GitHub.
