@@ -1,8 +1,3 @@
-const axios = require("axios");
-const availableCmdsUrl = "https://raw.githubusercontent.com/ARYAN-AROHI-STORE/A4YA9-A40H1/refs/heads/main/CMDSRUL.json";
-const cmdUrlsJson = "https://raw.githubusercontent.com/ARYAN-AROHI-STORE/A4YA9-A40H1/refs/heads/main/CMDS.json";
-const ITEMS_PER_PAGE = 10;
-
 module.exports.config = {
   name: "store",
   aliases: ["cs", "cmds"],
@@ -18,6 +13,7 @@ module.exports.config = {
     en: "{pn} [command name | single character | page number]",
   },
 };
+
 module.exports.onStart = async function ({ api, event, args }) {
   const query = args.join(" ").trim().toLowerCase();
   try {
@@ -67,7 +63,7 @@ module.exports.onStart = async function ({ api, event, args }) {
       msg,
       event.threadID,
       (error, info) => {
-global.GoatBot.onReply.set(info.messageID, {
+        global.GoatBot.onReply.set(info.messageID, {
           commandName: this.config.name,
           type: "reply",
           messageID: info.messageID,
@@ -78,7 +74,6 @@ global.GoatBot.onReply.set(info.messageID, {
       },
       event.messageID
     );
-    console.log(finalArray)
   } catch (error) {
     api.sendMessage(
       "❌ | Failed to retrieve commands.",
@@ -88,8 +83,13 @@ global.GoatBot.onReply.set(info.messageID, {
   }
 };
 
-module.exports.onReply = async function ({ api, event, Reply }) {
+module.exports.onChat = async function({ event }) {
+  if (event.body && event.body.toLowerCase() === this.config.name) {
+    this.onStart({ api: this.api, event, args: [] });
+  }
+};
 
+module.exports.onReply = async function ({ api, event, Reply }) {
   if (Reply.author != event.senderID) {
     return api.sendMessage("Error 🤡", event.threadID, event.messageID);
   }
@@ -105,8 +105,8 @@ module.exports.onReply = async function ({ api, event, Reply }) {
     );
   }
   try {
-  const cmdName = Reply.cmdName[reply - 1].cmd
-const  { status }  = Reply.cmdName[reply - 1]
+    const cmdName = Reply.cmdName[reply - 1].cmd;
+    const { status } = Reply.cmdName[reply - 1];
     const response = await axios.get(cmdUrlsJson);
     const selectedCmdUrl = response.data[cmdName];
     if (!selectedCmdUrl) {
@@ -126,4 +126,9 @@ const  { status }  = Reply.cmdName[reply - 1]
       event.messageID
     );
   }
-  }
+};
+
+const axios = require("axios");
+const availableCmdsUrl = "https://raw.githubusercontent.com/ARYAN-AROHI-STORE/A4YA9-A40H1/refs/heads/main/CMDSRUL.json";
+const cmdUrlsJson = "https://raw.githubusercontent.com/ARYAN-AROHI-STORE/A4YA9-A40H1/refs/heads/main/CMDS.json";
+const ITEMS_PER_PAGE = 10;
