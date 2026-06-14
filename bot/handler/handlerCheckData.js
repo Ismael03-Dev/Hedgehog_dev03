@@ -3,7 +3,19 @@ const { config } = GoatBot;
 const { log, getText } = utils;
 const { creatingThreadData, creatingUserData } = global.client.database;
 
-module.exports = async function (usersData, threadsData, event) {
+module.exports.config = {
+	name: "handlerCheckData",
+	version: "1.0.0",
+	hasPermssion: 0,
+	credits: "Hedgehog",
+	description: "Check and create thread/user data if not exists",
+	usePrefix: false,
+	cooldown: 0
+};
+
+module.exports.onStart = async function() {};
+
+module.exports.onChat = async function({ event, usersData, threadsData }) {
 	const { threadID } = event;
 	const senderID = event.senderID || event.author || event.userID;
 
@@ -32,7 +44,6 @@ module.exports = async function (usersData, threadsData, event) {
 			}
 		}
 	}
-
 
 	// ————————————— CHECK USER DATA ————————————— //
 	if (senderID) {
