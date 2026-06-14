@@ -3,18 +3,6 @@
  * ! The source code is written by NTKhang, please don't change the author's name everywhere. Thank you for using
  * ! Official source code: https://github.com/ntkhang03/Goat-Bot-V2
  * ! If you do not download the source code from the above address, you are using an unknown version and at risk of having your account hacked
- *
- * English:
- * ! Please do not change the below code, it is very important for the project.
- * It is my motivation to maintain and develop the project for free.
- * ! If you change it, you will be banned forever
- * Thank you for using
- *
- * Vietnamese:
- * ! Vui lòng không thay đổi mã bên dưới, nó rất quan trọng đối với dự án.
- * Nó là động lực để tôi duy trì và phát triển dự án miễn phí.
- * ! Nếu thay đổi nó, bạn sẽ bị cấm vĩnh viễn
- * Cảm ơn bạn đã sử dụng
  */
 
 process.on('unhandledRejection', error => console.log(error));
@@ -49,16 +37,45 @@ function validJSON(pathDir) {
 const { NODE_ENV } = process.env;
 const isDev = ['production', 'development'].includes(NODE_ENV);
 
-// Create empty config.json BEFORE validation
+// Create missing config files BEFORE validation
 const configJsonPath = path.normalize(`${__dirname}/config.json`);
+const configCommandsJsonPath = path.normalize(`${__dirname}/configCommands.json`);
+const accountTxtPath = path.normalize(`${__dirname}/account.txt`);
+
 if (!fs.existsSync(configJsonPath)) {
   fs.writeFileSync(configJsonPath, '{}', 'utf8');
   console.log('✅ Created missing config.json');
 }
 
+if (!fs.existsSync(configCommandsJsonPath)) {
+  fs.writeFileSync(configCommandsJsonPath, '{}', 'utf8');
+  console.log('✅ Created missing configCommands.json');
+}
+
+if (!fs.existsSync(accountTxtPath)) {
+  fs.writeFileSync(accountTxtPath, '', 'utf8');
+  console.log('✅ Created missing account.txt');
+}
+
 const dirConfig = path.normalize(`${__dirname}/config${isDev ? '.dev.json' : '.json'}`);
 const dirConfigCommands = path.normalize(`${__dirname}/configCommands${isDev ? '.dev.json' : '.json'}`);
 const dirAccount = path.normalize(`${__dirname}/account${isDev ? '.dev.txt' : '.txt'}`);
+
+// Create .dev files if they don't exist in dev mode
+if (isDev) {
+  if (!fs.existsSync(dirConfig)) {
+    fs.writeFileSync(dirConfig, '{}', 'utf8');
+    console.log(`✅ Created missing ${dirConfig}`);
+  }
+  if (!fs.existsSync(dirConfigCommands)) {
+    fs.writeFileSync(dirConfigCommands, '{}', 'utf8');
+    console.log(`✅ Created missing ${dirConfigCommands}`);
+  }
+  if (!fs.existsSync(dirAccount)) {
+    fs.writeFileSync(dirAccount, '', 'utf8');
+    console.log(`✅ Created missing ${dirAccount}`);
+  }
+}
 
 // Validate configuration files
 if (!isDev) {
@@ -74,11 +91,15 @@ if (!isDev) {
 } else {
   // In dev mode, only validate .dev.json files
   try {
-    validJSON(dirConfig);
-    validJSON(dirConfigCommands);
+    if (fs.existsSync(dirConfig)) {
+      validJSON(dirConfig);
+    }
+    if (fs.existsSync(dirConfigCommands)) {
+      validJSON(dirConfigCommands);
+    }
   }
   catch (err) {
-    log.error("CONFIG", `Invalid JSON file "${dirConfig.replace(__dirname, "")}":\n${err.message.split("\n").map(line => `  ${line}`).join("\n")}\nPlease fix it and restart bot`);
+    log.error("CONFIG", `Invalid JSON file:\n${err.message.split("\n").map(line => `  ${line}`).join("\n")}\nPlease fix it and restart bot`);
     process.exit(0);
   }
 }
