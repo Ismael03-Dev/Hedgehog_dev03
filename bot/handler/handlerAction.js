@@ -1,6 +1,20 @@
 const createFuncMessage = global.utils.message;
 const handlerCheckDB = require("./handlerCheckData.js");
 
+module.exports.config = {
+    name: "handlerEvents",
+    version: "1.0.0",
+    hasPermssion: 0,
+    credits: "Hedgehog",
+    description: "Event handler for bot",
+    usages: "",
+    cooldowns: 0
+};
+
+module.exports.onStart = async function({ api, event }) {};
+
+module.exports.onChat = async function({ api, event, message }) {};
+
 module.exports = (api, threadModel, userModel, dashBoardModel, globalModel, usersData, threadsData, dashBoardData, globalData) => {
     const handlerEvents = require(process.env.NODE_ENV == 'development' ? "./handlerEvents.dev.js" : "./handlerEvents.js")(api, threadModel, userModel, dashBoardModel, globalModel, usersData, threadsData, dashBoardData, globalData);
 
@@ -19,7 +33,7 @@ module.exports = (api, threadModel, userModel, dashBoardModel, globalModel, user
         } = handlerChat;
 
         onAnyEvent();
-        
+
         switch (event.type) {
             case "message":
             case "message_reply":
