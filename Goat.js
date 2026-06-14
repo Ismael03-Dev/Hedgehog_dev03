@@ -37,7 +37,6 @@ function validJSON(pathDir) {
 const { NODE_ENV } = process.env;
 const isDev = ['production', 'development'].includes(NODE_ENV);
 
-// Create missing config files BEFORE validation
 const configJsonPath = path.normalize(`${__dirname}/config.json`);
 const configCommandsJsonPath = path.normalize(`${__dirname}/configCommands.json`);
 const accountTxtPath = path.normalize(`${__dirname}/account.txt`);
@@ -61,7 +60,6 @@ const dirConfig = path.normalize(`${__dirname}/config${isDev ? '.dev.json' : '.j
 const dirConfigCommands = path.normalize(`${__dirname}/configCommands${isDev ? '.dev.json' : '.json'}`);
 const dirAccount = path.normalize(`${__dirname}/account${isDev ? '.dev.txt' : '.txt'}`);
 
-// Create .dev files if they don't exist in dev mode
 if (isDev) {
   if (!fs.existsSync(dirConfig)) {
     fs.writeFileSync(dirConfig, '{}', 'utf8');
@@ -77,7 +75,6 @@ if (isDev) {
   }
 }
 
-// Validate configuration files
 if (!isDev) {
   for (const pathDir of [dirConfig, dirConfigCommands]) {
     try {
@@ -89,7 +86,6 @@ if (!isDev) {
     }
   }
 } else {
-  // In dev mode, only validate .dev.json files
   try {
     if (fs.existsSync(dirConfig)) {
       validJSON(dirConfig);
@@ -247,7 +243,28 @@ if (config.autoRestart) {
 }
 
 (async () => {
-        const { gmailAccount } = config.credentials;
+        let gmailAccount = config.credentials?.gmailAccount;
+        
+        if ((!gmailAccount || !gmailAccount.clientId) && isDev) {
+          try {
+            const devConfig = require(dirConfig);
+            gmailAccount = devConfig.credentials?.gmailAccount;
+            console.log('✅ Loaded Gmail credentials from dev config');
+          } catch (err) {
+            console.log('⚠️ Could not load dev config for credentials');
+          }
+        }
+        
+        if (!gmailAccount || !gmailAccount.clientId) {
+          console.log('⚠️ No Gmail credentials found, using dummy values');
+          gmailAccount = {
+            email: '',
+            clientId: '',
+            clientSecret: '',
+            refreshToken: ''
+          };
+        }
+        
         const { email, clientId, clientSecret, refreshToken } = gmailAccount;
         const OAuth2 = google.auth.OAuth2;
         const OAuth2_client = new OAuth2(clientId, clientSecret);
@@ -257,48 +274,55 @@ if (config.autoRestart) {
                 accessToken = await OAuth2_client.getAccessToken();
         }
         catch (err) {
-                throw new Error(getText("Goat", "googleApiTokenExpired"));
+                console.log('⚠️ Gmail API not configured, skipping email features');
+                accessToken = null;
         }
-        const transporter = nodemailer.createTransport({
-                host: 'smtp.gmail.com',
-                service: 'Gmail',
-                auth: {
-                        type: 'OAuth2',
-                        user: email,
-                        clientId,
-                        clientSecret,
-                        refreshToken,
-                        accessToken
-                }
-        });
+        
+        if (accessToken) {
+          const transporter = nodemailer.createTransport({
+                  host: 'smtp.gmail.com',
+                  service: 'Gmail',
+                  auth: {
+                          type: 'OAuth2',
+                          user: email,
+                          clientId,
+                          clientSecret,
+                          refreshToken,
+                          accessToken
+                  }
+          });
 
-        async function sendMail({ to, subject, text, html, attachments }) {
-                const transporter = nodemailer.createTransport({
-                        host: 'smtp.gmail.com',
-                        service: 'Gmail',
-                        auth: {
-                                type: 'OAuth2',
-                                user: email,
-                                clientId,
-                                clientSecret,
-                                refreshToken,
-                                accessToken
-                        }
-                });
-                const mailOptions = {
-                        from: email,
-                        to,
-                        subject,
-                        text,
-                        html,
-                        attachments
-                };
-                const info = await transporter.sendMail(mailOptions);
-                return info;
+          async function sendMail({ to, subject, text, html, attachments }) {
+                  const transporter = nodemailer.createTransport({
+                          host: 'smtp.gmail.com',
+                          service: 'Gmail',
+                          auth: {
+                                  type: 'OAuth2',
+                                  user: email,
+                                  clientId,
+                                  clientSecret,
+                                  refreshToken,
+                                  accessToken
+                          }
+                  });
+                  const mailOptions = {
+                          from: email,
+                          to,
+                          subject,
+                          text,
+                          html,
+                          attachments
+                  };
+                  const info = await transporter.sendMail(mailOptions);
+                  return info;
+          }
+
+          global.utils.sendMail = sendMail;
+          global.utils.transporter = transporter;
+        } else {
+          global.utils.sendMail = async () => console.log('Email not sent: Gmail API not configured');
+          global.utils.transporter = null;
         }
-
-        global.utils.sendMail = sendMail;
-        global.utils.transporter = transporter;
 
         const { data: { version } } = await axios.get("https://raw.githubusercontent.com/ntkhang03/Goat-Bot-V2/main/package.json");
         const currentVersion = require("./package.json").version;
