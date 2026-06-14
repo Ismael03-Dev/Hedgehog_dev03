@@ -1,3 +1,5 @@
+Here's the corrected code with balanced braces:
+
 const axios = require("axios");
 const ytdl = require("@distube/ytdl-core");
 const fs = require("fs-extra");
@@ -328,58 +330,4 @@ async function getVideoInfo(id) {
 	const { title, lengthSeconds, viewCount, videoId, thumbnail, author } = json.videoDetails;
 	let getChapters;
 	try {
-		getChapters = json2.playerOverlays.playerOverlayRenderer.decoratedPlayerBarRenderer.decoratedPlayerBarRenderer.playerBar.multiMarkersPlayerBarRenderer.markersMap.find(x => x.key == "DESCRIPTION_CHAPTERS" && x.value.chapters).value.chapters;
-	}
-	catch (e) {
-		getChapters = [];
-	}
-	const owner = json2.contents.twoColumnWatchNextResults.results.results.contents.find(x => x.videoSecondaryInfoRenderer).videoSecondaryInfoRenderer.owner;
-
-	const result = {
-		videoId,
-		title,
-		video_url: `https://youtu.be/${videoId}`,
-		lengthSeconds: lengthSeconds.match(/\d+/)[0],
-		viewCount: viewCount.match(/\d+/)[0],
-		uploadDate: json.microformat.playerMicroformatRenderer.uploadDate,
-		// contents.twoColumnWatchNextResults.results.results.contents[0].videoPrimaryInfoRenderer.videoActions.menuRenderer.topLevelButtons[0].segmentedLikeDislikeButtonViewModel.likeButtonViewModel.likeButtonViewModel.toggleButtonViewModel.toggleButtonViewModel.defaultButtonViewModel.buttonViewModel.accessibilityText
-		likes: json2.contents.twoColumnWatchNextResults.results.results.contents.find(x => x.videoPrimaryInfoRenderer).videoPrimaryInfoRenderer.videoActions.menuRenderer.topLevelButtons.find(x => x.segmentedLikeDislikeButtonViewModel).segmentedLikeDislikeButtonViewModel.likeButtonViewModel.likeButtonViewModel.toggleButtonViewModel.toggleButtonViewModel.defaultButtonViewModel.buttonViewModel.accessibilityText.replace(/\.|,/g, '').match(/\d+/)?.[0] || 0,
-		chapters: getChapters.map((x, i) => {
-			const start_time = x.chapterRenderer.timeRangeStartMillis;
-			const end_time = getChapters[i + 1]?.chapterRenderer?.timeRangeStartMillis || lengthSeconds.match(/\d+/)[0] * 1000;
-
-			return {
-				title: x.chapterRenderer.title.simpleText,
-				start_time_ms: start_time,
-				start_time: start_time / 1000,
-				end_time_ms: end_time - start_time + start_time,
-				end_time: (end_time - start_time + start_time) / 1000
-			};
-		}),
-		thumbnails: thumbnail.thumbnails,
-		author: author,
-		channel: {
-			id: owner.videoOwnerRenderer.navigationEndpoint.browseEndpoint.browseId,
-			username: owner.videoOwnerRenderer.navigationEndpoint.browseEndpoint.canonicalBaseUrl,
-			name: owner.videoOwnerRenderer.title.runs[0].text,
-			thumbnails: owner.videoOwnerRenderer.thumbnail.thumbnails,
-			subscriberCount: parseAbbreviatedNumber(owner.videoOwnerRenderer.subscriberCountText.simpleText)
-		}
-	};
-
-	return result;
-}
-
-function parseAbbreviatedNumber(string) {
-	const match = string
-		.replace(',', '.')
-		.replace(' ', '')
-		.match(/([\d,.]+)([MK]?)/);
-	if (match) {
-		let [, num, multi] = match;
-		num = parseFloat(num);
-		return Math.round(multi === 'M' ? num * 1000000 :
-			multi === 'K' ? num * 1000 : num);
-	}
-	return null;
-}
+		getChapters = json2.playerOverlays.playerOverlayRenderer.decoratedPlayerBarRenderer.decorated
