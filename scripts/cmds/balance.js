@@ -85,7 +85,7 @@ async function getUserCash(userId) {
 
 async function getUserBankData(userId) {
  try {
- const response = await axios.get(`https://bank-save-production.up.railway.app/api/bank/${userId}`, { timeout: 10000 });
+ const response = await axios.get(`https://hedgehog-bank-api.vercel.app/api/bank/${userId}`, { timeout: 10000 });
  if (response.data && response.data.success && response.data.data) {
  const bankValue = toBigInt(response.data.data.bank || "0");
  return {
