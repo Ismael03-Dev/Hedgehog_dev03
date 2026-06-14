@@ -1,3 +1,6 @@
+Voici le fichier corrigé avec les accolades équilibrées :
+
+`javascript
 const fs     = require("fs");
 const path   = require("path");
 const axios  = require("axios");
@@ -345,5 +348,4 @@ function createCodeImageSync(code, fileName) {
       }
       if (found) continue;
       for (const m of mths) {
-        if (rem.startsWith(m)) {
-          ctx.fillStyle = "#d2a8
+       
