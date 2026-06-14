@@ -298,5 +298,3 @@ function compareVersion(version1, version2) {
 	}
 	return 0; // version1 = version2
 }
-
-💬 React to this message to apply changes directly on GitHub.
